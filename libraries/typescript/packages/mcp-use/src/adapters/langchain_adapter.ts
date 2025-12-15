@@ -1,13 +1,13 @@
-import type { JSONSchema } from "@dmitryrechkin/json-schema-to-zod";
+import type { JSONSchema } from "../utils/json-schema-to-zod/index.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type {
   CallToolResult,
   Tool as MCPTool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import type { ZodTypeAny } from "zod";
 import type { BaseConnector } from "../connectors/base.js";
 
-import { JSONSchemaToZod } from "@dmitryrechkin/json-schema-to-zod";
+import { JSONSchemaToZod } from "../utils/json-schema-to-zod/index.js";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { logger } from "../logging.js";

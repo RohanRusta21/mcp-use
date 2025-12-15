@@ -5,26 +5,27 @@ import type {
 } from "@langchain/core/language_models/base";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { StreamEvent } from "@langchain/core/tracers/log_stream";
-import type { ZodSchema } from "zod";
-import type { MCPClient } from "../client.js";
-import type { BaseConnector } from "../connectors/base.js";
-import type { MCPSession } from "../session.js";
 import {
+  AIMessage,
   createAgent,
-  type ReactAgent,
+  HumanMessage,
   modelCallLimitMiddleware,
   SystemMessage,
-  AIMessage,
-  HumanMessage,
   ToolMessage,
   type DynamicTool,
+  type ReactAgent,
 } from "langchain";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import type { ZodSchema } from "zod";
+import { toJSONSchema } from "zod";
 import { LangChainAdapter } from "../adapters/langchain_adapter.js";
+import type { MCPClient } from "../client.js";
+import type { BaseConnector } from "../connectors/base.js";
 import { logger } from "../logging.js";
 import { ServerManager } from "../managers/server_manager.js";
 import { ObservabilityManager } from "../observability/index.js";
+import type { MCPSession } from "../session.js";
 import { extractModelInfo, Telemetry } from "../telemetry/index.js";
+import { getPackageVersion } from "../version.js";
 import { createSystemMessage } from "./prompts/system_prompt_builder.js";
 import {
   DEFAULT_SYSTEM_PROMPT_TEMPLATE,
@@ -56,6 +57,14 @@ export interface AgentStep {
 }
 
 export class MCPAgent {
+  /**
+   * Get the mcp-use package version.
+   * Works in all environments (Node.js, browser, Cloudflare Workers, Deno, etc.)
+   */
+  public static getPackageVersion(): string {
+    return getPackageVersion();
+  }
+
   private llm?: LanguageModel;
   private client?: MCPClient;
   private connectors: BaseConnector[];
@@ -272,8 +281,13 @@ export class MCPAgent {
           `🔌 Found ${Object.keys(this.sessions).length} existing sessions`
         );
 
-        // If no active sessions exist, create new ones
-        if (Object.keys(this.sessions).length === 0) {
+        // Filter out internal code_mode session to check if real MCP servers are connected
+        const nonCodeModeSessions = Object.keys(this.sessions).filter(
+          (name) => name !== "code_mode"
+        );
+
+        // If no active sessions exist (excluding code_mode), create new ones
+        if (nonCodeModeSessions.length === 0) {
           logger.info("🔄 No active sessions found, creating new ones...");
           this.sessions = await this.client.createAllSessions();
           logger.info(
@@ -282,11 +296,26 @@ export class MCPAgent {
         }
 
         // Create LangChain tools directly from the client using the adapter
-        this._tools = await LangChainAdapter.createTools(this.client);
+        // In code mode, only expose the code_mode tools (execute_code, search_tools)
+        if (this.client.codeMode) {
+          const codeModeSession = this.sessions["code_mode"];
+          if (codeModeSession) {
+            this._tools = await this.adapter.createToolsFromConnectors([
+              codeModeSession.connector,
+            ]);
+            logger.info(`🛠️ Created ${this._tools.length} code mode tools`);
+          } else {
+            throw new Error(
+              "Code mode enabled but code_mode session not found"
+            );
+          }
+        } else {
+          this._tools = await LangChainAdapter.createTools(this.client);
+          logger.info(
+            `🛠️ Created ${this._tools.length} LangChain tools from client`
+          );
+        }
         this._tools.push(...this.additionalTools);
-        logger.info(
-          `🛠️ Created ${this._tools.length} LangChain tools from client`
-        );
       } else {
         // Using direct connector - only establish connection
         logger.info(
@@ -669,6 +698,234 @@ export class MCPAgent {
     }
   }
 
+  /**
+   * Check if a message is AI/assistant-like regardless of whether it's a class instance.
+   * Handles version mismatches, serialization boundaries, and different message formats.
+   *
+   * This method solves the issue where messages from LangChain agents may be plain JavaScript
+   * objects (e.g., `{ type: 'ai', content: '...' }`) instead of AIMessage instances due to
+   * serialization/deserialization across module boundaries or version mismatches.
+   *
+   * @example
+   * // Real AIMessage instance (standard case)
+   * _isAIMessageLike(new AIMessage("hello")) // => true
+   *
+   * @example
+   * // Plain object after serialization (fixes issue #446)
+   * _isAIMessageLike({ type: "ai", content: "hello" }) // => true
+   *
+   * @example
+   * // OpenAI-style format with role
+   * _isAIMessageLike({ role: "assistant", content: "hello" }) // => true
+   *
+   * @example
+   * // Object with getType() method
+   * _isAIMessageLike({ getType: () => "ai", content: "hello" }) // => true
+   *
+   * @param message - The message object to check
+   * @returns true if the message represents an AI/assistant message
+   */
+  private _isAIMessageLike(message: unknown): message is
+    | AIMessage
+    | {
+        type: "ai" | "assistant";
+        content?: unknown;
+        tool_calls?: unknown;
+      }
+    | {
+        role: "ai" | "assistant";
+        content?: unknown;
+        tool_calls?: unknown;
+      } {
+    // Fast path: check if it's an actual AIMessage instance
+    if (message instanceof AIMessage) {
+      return true;
+    }
+
+    // Relaxed check: just need to be an object (content is optional as messages might only have tool_calls)
+    if (typeof message !== "object" || message === null) {
+      return false;
+    }
+
+    // Check for type/role properties that indicate an assistant message
+    // Support multiple formats from different LangChain versions
+    const msg = message as any;
+
+    // Try methods first (for partially deserialized objects)
+    if (typeof msg.getType === "function") {
+      try {
+        const type = msg.getType();
+        if (type === "ai" || type === "assistant") {
+          return true;
+        }
+      } catch (error) {
+        // If getType() throws, fall through to other checks
+        // Note: Silent failure here to avoid performance impact in hot path
+      }
+    }
+    if (typeof msg._getType === "function") {
+      try {
+        const type = msg._getType();
+        if (type === "ai" || type === "assistant") {
+          return true;
+        }
+      } catch (error) {
+        // If _getType() throws, fall through to other checks
+        // Note: Silent failure here to avoid performance impact in hot path
+      }
+    }
+
+    // Check direct properties
+    if ("type" in msg) {
+      return msg.type === "ai" || msg.type === "assistant";
+    }
+    if ("role" in msg) {
+      return msg.role === "ai" || msg.role === "assistant";
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a message has tool calls, handling both class instances and plain objects.
+   * Safely checks for tool_calls array presence.
+   *
+   * @example
+   * // AIMessage with tool calls
+   * const msg = new AIMessage({ content: "", tool_calls: [{ name: "add", args: {} }] });
+   * _messageHasToolCalls(msg) // => true
+   *
+   * @example
+   * // Plain object with tool calls
+   * _messageHasToolCalls({ type: "ai", tool_calls: [{ name: "add" }] }) // => true
+   *
+   * @example
+   * // Message without tool calls
+   * _messageHasToolCalls({ type: "ai", content: "hello" }) // => false
+   *
+   * @param message - The message object to check
+   * @returns true if the message has non-empty tool_calls array
+   */
+  private _messageHasToolCalls(message: unknown): boolean {
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      "tool_calls" in message &&
+      Array.isArray((message as { tool_calls?: unknown }).tool_calls)
+    ) {
+      return (message as { tool_calls: unknown[] }).tool_calls.length > 0;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a message is a HumanMessage-like object.
+   * Handles both class instances and plain objects from serialization.
+   *
+   * @example
+   * _isHumanMessageLike(new HumanMessage("hello")) // => true
+   * _isHumanMessageLike({ type: "human", content: "hello" }) // => true
+   *
+   * @param message - The message object to check
+   * @returns true if the message represents a human message
+   */
+  private _isHumanMessageLike(message: unknown): boolean {
+    if (message instanceof HumanMessage) {
+      return true;
+    }
+    if (typeof message !== "object" || message === null) {
+      return false;
+    }
+    const msg = message as any;
+
+    // Try methods first
+    if (typeof msg.getType === "function") {
+      try {
+        const type = msg.getType();
+        if (type === "human" || type === "user") {
+          return true;
+        }
+      } catch (error) {
+        // Silent failure for performance
+      }
+    }
+
+    // Check direct properties
+    if ("type" in msg && (msg.type === "human" || msg.type === "user")) {
+      return true;
+    }
+    if ("role" in msg && (msg.role === "human" || msg.role === "user")) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a message is a ToolMessage-like object.
+   * Handles both class instances and plain objects from serialization.
+   *
+   * @example
+   * _isToolMessageLike(new ToolMessage({ content: "result", tool_call_id: "123" })) // => true
+   * _isToolMessageLike({ type: "tool", content: "result" }) // => true
+   *
+   * @param message - The message object to check
+   * @returns true if the message represents a tool message
+   */
+  private _isToolMessageLike(message: unknown): boolean {
+    if (message instanceof ToolMessage) {
+      return true;
+    }
+    if (typeof message !== "object" || message === null) {
+      return false;
+    }
+    const msg = message as any;
+
+    // Try methods first
+    if (typeof msg.getType === "function") {
+      try {
+        const type = msg.getType();
+        if (type === "tool") {
+          return true;
+        }
+      } catch (error) {
+        // Silent failure for performance
+      }
+    }
+
+    // Check direct properties
+    if ("type" in msg && msg.type === "tool") {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extract content from a message, handling both AIMessage instances and plain objects.
+   *
+   * @example
+   * // From AIMessage instance
+   * _getMessageContent(new AIMessage("hello")) // => "hello"
+   *
+   * @example
+   * // From plain object
+   * _getMessageContent({ type: "ai", content: "hello" }) // => "hello"
+   *
+   * @param message - The message object to extract content from
+   * @returns The content of the message, or undefined if not present
+   */
+  private _getMessageContent(message: unknown): unknown {
+    if (message instanceof AIMessage) {
+      return message.content;
+    }
+    if (message && typeof message === "object" && "content" in message) {
+      return (message as { content: unknown }).content;
+    }
+    return undefined;
+  }
+
   private async _consumeAndReturn<T>(
     generator: AsyncGenerator<AgentStep, string | T, void>
   ): Promise<string | T> {
@@ -799,7 +1056,11 @@ export class MCPAgent {
       // Convert messages to format expected by LangChain agent
       const langchainHistory: BaseMessage[] = [];
       for (const msg of historyToUse) {
-        if (msg instanceof HumanMessage || msg instanceof AIMessage) {
+        if (
+          this._isHumanMessageLike(msg) ||
+          this._isAIMessageLike(msg) ||
+          this._isToolMessageLike(msg)
+        ) {
           langchainHistory.push(msg);
         }
       }
@@ -834,6 +1095,8 @@ export class MCPAgent {
           tags: this.getTags(),
           // Set trace name for LangChain/Langfuse
           runName: this.metadata.trace_name || "mcp-use-agent",
+          // Set recursion limit to 3x maxSteps to account for model calls + tool executions
+          recursionLimit: this.maxSteps * 3,
           // Pass sessionId for Langfuse if present in metadata
           ...(this.metadata.session_id && {
             sessionId: this.metadata.session_id,
@@ -902,10 +1165,7 @@ export class MCPAgent {
                 }
 
                 // Track tool results (ToolMessage)
-                if (
-                  message instanceof ToolMessage ||
-                  (message && "type" in message && message.type === "tool")
-                ) {
+                if (this._isToolMessageLike(message)) {
                   const observation = message.content;
                   let observationStr = String(observation);
                   if (observationStr.length > 100) {
@@ -953,14 +1213,12 @@ export class MCPAgent {
 
                 // Track final AI message (without tool calls = final response)
                 if (
-                  message instanceof AIMessage &&
-                  !(
-                    "tool_calls" in message &&
-                    Array.isArray(message.tool_calls) &&
-                    message.tool_calls.length > 0
-                  )
+                  this._isAIMessageLike(message) &&
+                  !this._messageHasToolCalls(message)
                 ) {
-                  finalOutput = this._normalizeOutput(message.content);
+                  finalOutput = this._normalizeOutput(
+                    this._getMessageContent(message)
+                  );
                   logger.info("✅ Agent finished with output");
                 }
               }
@@ -995,9 +1253,11 @@ export class MCPAgent {
 
       // 4. Update conversation history
       if (this.memoryEnabled) {
-        this.addToHistory(new HumanMessage(query));
-        if (finalOutput) {
-          this.addToHistory(new AIMessage(finalOutput));
+        // Store all messages from execution (including tool calls and tool outputs)
+        // Extract messages from current execution (skip the messages that were already in history)
+        const newMessages = accumulatedMessages.slice(langchainHistory.length);
+        for (const msg of newMessages) {
+          this.addToHistory(msg);
         }
       }
 
@@ -1125,8 +1385,8 @@ export class MCPAgent {
       this._agentExecutor = null;
       this._tools = [];
       if (this.client) {
-        logger.info("🔄 Closing sessions through client");
-        await this.client.closeAllSessions();
+        logger.info("🔄 Closing client and cleaning up resources");
+        await this.client.close();
         this.sessions = {};
       } else {
         for (const connector of this.connectors) {
@@ -1141,6 +1401,36 @@ export class MCPAgent {
       this._initialized = false;
       logger.info("👋 Agent closed successfully");
     }
+  }
+
+  /**
+   * Yields with pretty-printed output for code mode.
+   * This method formats and displays tool executions in a user-friendly way with syntax highlighting.
+   */
+  public async *prettyStreamEvents<T = string>(
+    query: string,
+    maxSteps?: number,
+    manageConnector = true,
+    externalHistory?: BaseMessage[],
+    outputSchema?: ZodSchema<T>
+  ): AsyncGenerator<void, string, void> {
+    const { prettyStreamEvents: prettyStream } = await import("./display.js");
+
+    const finalResponse = "";
+
+    for await (const _ of prettyStream(
+      this.streamEvents(
+        query,
+        maxSteps,
+        manageConnector,
+        externalHistory,
+        outputSchema
+      )
+    )) {
+      yield;
+    }
+
+    return finalResponse;
   }
 
   /**
@@ -1185,15 +1475,17 @@ export class MCPAgent {
       this.maxSteps = maxSteps ?? this.maxSteps;
 
       const display_query =
-        query.length > 50
+        typeof query === "string" && query.length > 50
           ? `${query.slice(0, 50).replace(/\n/g, " ")}...`
-          : query.replace(/\n/g, " ");
+          : typeof query === "string"
+            ? query.replace(/\n/g, " ")
+            : String(query);
       logger.info(`💬 Received query for streamEvents: '${display_query}'`);
 
       // Add user message to history if memory enabled
       if (this.memoryEnabled) {
-        logger.info(`🔄 Adding user message to history: ${query}`);
-        this.addToHistory(new HumanMessage(query));
+        logger.info(`🔄 Adding user message to history: ${display_query}`);
+        this.addToHistory(new HumanMessage({ content: query }));
       }
 
       // Prepare history
@@ -1201,13 +1493,15 @@ export class MCPAgent {
       const langchainHistory: BaseMessage[] = [];
       for (const msg of historyToUse) {
         if (
-          msg instanceof HumanMessage ||
-          msg instanceof AIMessage ||
-          msg instanceof ToolMessage
+          this._isHumanMessageLike(msg) ||
+          this._isAIMessageLike(msg) ||
+          this._isToolMessageLike(msg)
         ) {
           langchainHistory.push(msg);
         } else {
-          logger.info(`⚠️ Skipped message of type: ${msg.constructor.name}`);
+          logger.info(
+            `⚠️ Skipped message of type: ${msg.constructor?.name || typeof msg}`
+          );
         }
       }
 
@@ -1230,6 +1524,8 @@ export class MCPAgent {
           tags: this.getTags(),
           // Set trace name for LangChain/Langfuse
           runName: this.metadata.trace_name || "mcp-use-agent",
+          // Set recursion limit to 3x maxSteps to account for model calls + tool executions
+          recursionLimit: this.maxSteps * 3,
           // Pass sessionId for Langfuse if present in metadata
           ...(this.metadata.session_id && {
             sessionId: this.metadata.session_id,
@@ -1373,7 +1669,7 @@ export class MCPAgent {
         // Add the final AI response to conversation history if memory is enabled
         this.addToHistory(new AIMessage(finalResponse));
       }
-
+      console.log("\n\n");
       logger.info(`🎉 StreamEvents complete - ${eventCount} events emitted`);
       success = true;
     } catch (e) {
@@ -1454,7 +1750,7 @@ export class MCPAgent {
     let schemaDescription = "";
 
     logger.debug(
-      `🔄 Structured output requested, schema: ${JSON.stringify(zodToJsonSchema(outputSchema), null, 2)}`
+      `🔄 Structured output requested, schema: ${JSON.stringify(toJSONSchema(outputSchema), null, 2)}`
     );
     // Check if withStructuredOutput method exists
     if (
@@ -1469,7 +1765,7 @@ export class MCPAgent {
     } else {
       throw new Error("LLM is required for structured output");
     }
-    const jsonSchema = zodToJsonSchema(outputSchema) as any;
+    const jsonSchema = toJSONSchema(outputSchema) as any;
     const { $schema, additionalProperties, ...cleanSchema } = jsonSchema;
     schemaDescription = JSON.stringify(cleanSchema, null, 2);
     logger.info(`🔄 Schema description: ${schemaDescription}`);
@@ -1551,7 +1847,9 @@ export class MCPAgent {
           chunkCount++;
 
           // Print the chunk for debugging
-          logger.info(`Chunk ${chunkCount}: ${JSON.stringify(chunk, null, 2)}`);
+          logger.debug(
+            `Chunk ${chunkCount}: ${JSON.stringify(chunk, null, 2)}`
+          );
 
           // Handle different chunk types
           if (typeof chunk === "string") {
@@ -1574,7 +1872,9 @@ export class MCPAgent {
           }
 
           if (chunkCount % 10 === 0) {
-            logger.info(`🔄 Structured output streaming: ${chunkCount} chunks`);
+            logger.debug(
+              `🔄 Structured output streaming: ${chunkCount} chunks`
+            );
           }
         }
 
@@ -1672,7 +1972,7 @@ export class MCPAgent {
     outputSchema: ZodSchema<T>
   ): string {
     try {
-      const jsonSchema = zodToJsonSchema(outputSchema) as any;
+      const jsonSchema = toJSONSchema(outputSchema) as any;
       const { $schema, additionalProperties, ...cleanSchema } = jsonSchema;
       const schemaDescription = JSON.stringify(cleanSchema, null, 2);
 

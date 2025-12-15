@@ -1,5 +1,1531 @@
 # @mcp-use/inspector
 
+## 0.12.6
+
+### Patch Changes
+
+- Updated dependencies [918287c]
+  - mcp-use@1.10.6
+
+## 0.12.5
+
+### Patch Changes
+
+- Updated dependencies [dcf938f]
+  - mcp-use@1.10.5
+
+## 0.12.4
+
+### Patch Changes
+
+- Updated dependencies
+  - mcp-use@1.10.4
+
+## 0.12.3
+
+### Patch Changes
+
+- fix: deno 3
+- Updated dependencies
+  - mcp-use@1.10.3
+
+## 0.12.2
+
+### Patch Changes
+
+- fix: update zod error
+- Updated dependencies
+  - mcp-use@1.10.2
+
+## 0.12.1
+
+### Patch Changes
+
+- b3d69ed: fix: zod import in official sdk
+- Updated dependencies [b3d69ed]
+  - mcp-use@1.10.1
+
+## 0.12.0
+
+### Minor Changes
+
+- 6ec11cd: ## Breaking Changes
+  - **Server API**: Renamed `createMCPServer()` factory function to `MCPServer` class constructor. The factory function is still available for backward compatibility but new code should use `new MCPServer({ name, ... })`.
+  - **Session API**: Replaced `session.connector.tools`, `session.connector.callTool()`, etc. with direct methods: `session.tools`, `session.callTool()`, `session.listResources()`, `session.readResource()`, etc.
+  - **OAuth Environment Variables**: Standardized OAuth env vars to `MCP_USE_OAUTH_*` prefix (e.g., `AUTH0_DOMAIN` → `MCP_USE_OAUTH_AUTH0_DOMAIN`).
+
+  ## New Features
+  - **Client Capabilities API**: Added `ctx.client.can()` and `ctx.client.capabilities()` to check client capabilities in tool callbacks.
+  - **Session Notifications**: Added `ctx.sendNotification()` and `ctx.sendNotificationToSession()` for sending notifications from tool callbacks.
+  - **Session Info**: Added `ctx.session.sessionId` to access current session ID in tool callbacks.
+  - **Resource Template Flat Structure**: Resource templates now support flat structure with `uriTemplate` directly on definition (in addition to nested structure).
+  - **Resource Template Callback Signatures**: Resource template callbacks now support multiple signatures: `()`, `(uri)`, `(uri, params)`, `(uri, params, ctx)`.
+  - **Type Exports**: Added exports for `CallToolResult`, `Tool`, `ToolAnnotations`, `PromptResult`, `GetPromptResult` types.
+
+  ## Improvements
+  - **Type Inference**: Enhanced type inference for resource template callbacks with better overload support.
+  - **Client Capabilities Tracking**: Server now captures and stores client capabilities during initialization.
+  - **Session Methods**: Added convenience methods to `MCPSession` for all MCP operations (listResources, readResource, subscribeToResource, listPrompts, getPrompt, etc.).
+  - **Documentation**: Major documentation refactoring and restructuring for better organization.
+
+- 6ec11cd: feat: added support for elicitation in inspector
+
+### Patch Changes
+
+- 6ec11cd: fix: refactor to use https://github.com/modelcontextprotocol/typescript-sdk/pull/1209
+- 6ec11cd: Updated dependencies.
+- 6ec11cd: chore: switch official sdk from npm to fork with edge runtime support
+- 6ec11cd: fix: fix transport bug
+- 6ec11cd: fix: build mcp use first
+- 6ec11cd: chore: replace official sdk with fork in imports
+- 6ec11cd: fix: use tool meta instead of result for appssdk
+- 6ec11cd: chore: fix types
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+- Updated dependencies [6ec11cd]
+  - mcp-use@1.10.0
+
+## 0.12.0-canary.11
+
+### Patch Changes
+
+- Updated dependencies [f0fc5a2]
+  - mcp-use@1.10.0-canary.11
+
+## 0.12.0-canary.10
+
+### Patch Changes
+
+- 0633fbd: fix: build mcp use first
+  - mcp-use@1.10.0-canary.10
+
+## 0.12.0-canary.9
+
+### Patch Changes
+
+- 79ce293: fix: use tool meta instead of result for appssdk
+  - mcp-use@1.10.0-canary.9
+
+## 0.12.0-canary.8
+
+### Patch Changes
+
+- Updated dependencies [54ccbd8]
+  - mcp-use@1.10.0-canary.8
+
+## 0.12.0-canary.7
+
+### Patch Changes
+
+- Updated dependencies [48b0133]
+  - mcp-use@1.10.0-canary.7
+
+## 0.12.0-canary.6
+
+### Patch Changes
+
+- c4fe367: chore: replace official sdk with fork in imports
+- Updated dependencies [c4fe367]
+  - mcp-use@1.10.0-canary.6
+
+## 0.12.0-canary.5
+
+### Patch Changes
+
+- 4d61e84: chore: switch official sdk from npm to fork with edge runtime support
+- Updated dependencies [4d61e84]
+  - mcp-use@1.10.0-canary.5
+
+## 0.12.0-canary.4
+
+### Patch Changes
+
+- Updated dependencies [4f8c871]
+  - mcp-use@1.10.0-canary.4
+
+## 0.12.0-canary.3
+
+### Patch Changes
+
+- 1379b00: chore: fix types
+- Updated dependencies [1379b00]
+  - mcp-use@1.10.0-canary.3
+
+## 0.12.0-canary.2
+
+### Minor Changes
+
+- 96e4097: ## Breaking Changes
+  - **Server API**: Renamed `createMCPServer()` factory function to `MCPServer` class constructor. The factory function is still available for backward compatibility but new code should use `new MCPServer({ name, ... })`.
+  - **Session API**: Replaced `session.connector.tools`, `session.connector.callTool()`, etc. with direct methods: `session.tools`, `session.callTool()`, `session.listResources()`, `session.readResource()`, etc.
+  - **OAuth Environment Variables**: Standardized OAuth env vars to `MCP_USE_OAUTH_*` prefix (e.g., `AUTH0_DOMAIN` → `MCP_USE_OAUTH_AUTH0_DOMAIN`).
+
+  ## New Features
+  - **Client Capabilities API**: Added `ctx.client.can()` and `ctx.client.capabilities()` to check client capabilities in tool callbacks.
+  - **Session Notifications**: Added `ctx.sendNotification()` and `ctx.sendNotificationToSession()` for sending notifications from tool callbacks.
+  - **Session Info**: Added `ctx.session.sessionId` to access current session ID in tool callbacks.
+  - **Resource Template Flat Structure**: Resource templates now support flat structure with `uriTemplate` directly on definition (in addition to nested structure).
+  - **Resource Template Callback Signatures**: Resource template callbacks now support multiple signatures: `()`, `(uri)`, `(uri, params)`, `(uri, params, ctx)`.
+  - **Type Exports**: Added exports for `CallToolResult`, `Tool`, `ToolAnnotations`, `PromptResult`, `GetPromptResult` types.
+
+  ## Improvements
+  - **Type Inference**: Enhanced type inference for resource template callbacks with better overload support.
+  - **Client Capabilities Tracking**: Server now captures and stores client capabilities during initialization.
+  - **Session Methods**: Added convenience methods to `MCPSession` for all MCP operations (listResources, readResource, subscribeToResource, listPrompts, getPrompt, etc.).
+  - **Documentation**: Major documentation refactoring and restructuring for better organization.
+
+### Patch Changes
+
+- Updated dependencies [96e4097]
+  - mcp-use@1.10.0-canary.2
+
+## 0.11.1-canary.1
+
+### Patch Changes
+
+- Updated dependencies [94f4852]
+  - mcp-use@1.9.1-canary.1
+
+## 0.11.1-canary.0
+
+### Patch Changes
+
+- 4d1aa19: fix: refactor to use https://github.com/modelcontextprotocol/typescript-sdk/pull/1209
+- Updated dependencies [4d1aa19]
+  - mcp-use@1.9.1-canary.0
+
+## 0.11.0
+
+### Minor Changes
+
+- 4fc04a9: feat: added support for elicitation in inspector
+
+### Patch Changes
+
+- 4fc04a9: Updated dependencies.
+- 4fc04a9: fix: fix transport bug
+- Updated dependencies [4fc04a9]
+- Updated dependencies [4fc04a9]
+- Updated dependencies [4fc04a9]
+  - mcp-use@1.9.0
+
+## 0.11.0-canary.3
+
+### Patch Changes
+
+- b0d1ffe: fix: fix transport bug
+- Updated dependencies [b0d1ffe]
+  - mcp-use@1.9.0-canary.3
+
+## 0.11.0-canary.2
+
+### Minor Changes
+
+- b56c907: feat: added support for elicitation in inspector
+
+### Patch Changes
+
+- Updated dependencies [b56c907]
+  - mcp-use@1.9.0-canary.2
+
+## 0.10.2-canary.1
+
+### Patch Changes
+
+- Updated dependencies [b4e960a]
+  - mcp-use@1.9.0-canary.1
+
+## 0.10.2-canary.0
+
+### Patch Changes
+
+- d726bfa: Updated dependencies.
+  - mcp-use@1.8.2-canary.0
+
+## 0.10.1
+
+### Patch Changes
+
+- 4bf21f3: Updated dependencies.
+  - mcp-use@1.8.1
+
+## 0.10.1-canary.0
+
+### Patch Changes
+
+- 33a1a69: Updated dependencies.
+  - mcp-use@1.8.1-canary.0
+
+## 0.10.0
+
+### Minor Changes
+
+- 00b19c5: Add sampling support in inspector and fixed long running sampling requests (were timing out after 60s)
+
+### Patch Changes
+
+- Updated dependencies [00b19c5]
+  - mcp-use@1.8.0
+
+## 0.10.0-canary.0
+
+### Minor Changes
+
+- de6ca09: Add sampling support in inspector and fixed long running sampling requests (were timing out after 60s)
+
+### Patch Changes
+
+- Updated dependencies [de6ca09]
+  - mcp-use@1.8.0-canary.0
+
+## 0.9.2
+
+### Patch Changes
+
+- a4341d5: chore: update deps
+- Updated dependencies [a4341d5]
+  - mcp-use@1.7.2
+
+## 0.9.2-canary.0
+
+### Patch Changes
+
+- c1d7378: chore: update deps
+- Updated dependencies [c1d7378]
+  - mcp-use@1.7.2-canary.0
+
+## 0.9.1
+
+### Patch Changes
+
+- f6f2b61: ### Bug Fixes
+  - **Fixed bin entry issue (#536)**: Resolved pnpm installation warning where bin entry referenced non-existent `./node_modules/@mcp-use/cli/dist/index.js` path. Created proper bin forwarding script at `./dist/src/bin.js` that allows users to run `mcp-use` CLI commands (dev, build, etc.) after installing the package.
+
+  ### Improvements
+  - Standardized import statement formatting across multiple files for improved code consistency and readability
+
+- f6f2b61: fix lint & format
+- Updated dependencies [f6f2b61]
+- Updated dependencies [f6f2b61]
+  - mcp-use@1.7.1
+
+## 0.9.1-canary.1
+
+### Patch Changes
+
+- c9cb2db: fix lint & format
+- Updated dependencies [c9cb2db]
+  - mcp-use@1.7.1-canary.1
+
+## 0.9.1-canary.0
+
+### Patch Changes
+
+- bab4ad0: ### Bug Fixes
+  - **Fixed bin entry issue (#536)**: Resolved pnpm installation warning where bin entry referenced non-existent `./node_modules/@mcp-use/cli/dist/index.js` path. Created proper bin forwarding script at `./dist/src/bin.js` that allows users to run `mcp-use` CLI commands (dev, build, etc.) after installing the package.
+
+  ### Improvements
+  - Standardized import statement formatting across multiple files for improved code consistency and readability
+
+- Updated dependencies [bab4ad0]
+  - mcp-use@1.7.1-canary.0
+
+## 0.9.0
+
+### Minor Changes
+
+- 2730902: ## New Features
+  - **OAuth Authentication System**: Complete OAuth 2.0 support with built-in providers (Auth0, WorkOS, Supabase, Keycloak) and custom provider configuration
+  - **OAuth Middleware & Routes**: Server-side OAuth flow handling with automatic token management and session persistence
+  - **OAuth Callback Component**: Inspector now includes OAuth callback handling for authentication flows
+  - **Context Storage**: New async local storage system for request-scoped context in servers
+  - **Response Helpers**: Utility functions for standardized HTTP responses and error handling
+  - **Runtime Detection**: Auto-detection utilities for Node.js, Bun, and Deno environments
+  - **Server Authentication Examples**: Added OAuth examples for Auth0, WorkOS, and Supabase
+
+  ## Improvements
+  - **Enhanced useMcp Hook**: Improved connection management with better state handling and OAuth support
+  - **Enhanced Inspector Dashboard**: Added OAuth configuration UI and connection status indicators
+  - **Enhanced Browser Provider**: Better authentication flow handling with OAuth integration
+  - **Improved Auto-Connect**: Enhanced connection recovery and auto-reconnect logic
+  - **Enhanced Authentication Docs**: Comprehensive server-side authentication guide with OAuth setup instructions
+  - **Renamed Notification Example**: Cleaner naming convention (notification-example → notifications)
+  - **Enhanced Tool Types**: Improved type definitions for server-side tool handlers with context support
+  - **Enhanced HTTP Connectors**: Added OAuth token handling in HTTP transport layer
+
+  ## Documentation
+  - Added server authentication guide
+  - Enhanced client authentication documentation with OAuth flows
+  - Added notification examples and usage patterns
+  - Updated useMcp hook documentation with OAuth configuration
+
+### Patch Changes
+
+- 2730902: Fix scrolls in tools, resources, and prompts tab
+- 2730902: Fix: switched to https://pkg.pr.new/modelcontextprotocol/typescript-sdk/@modelcontextprotocol/sdk@1194 instead of @modelcontextprotocol/sdk to fix zod errors on deno runtime
+- 2730902: Optimized dependencies
+- 2730902: Fix: fix models and apikeys box in inspector chat
+- 2730902: Fix: rendering of table, inline-code, code and images of inspector chat
+- 2730902: Fix padding of rpc panels
+- 2730902: Feat: added enum input display for tools
+- 2730902: feat: enable bundle minification 9.7mb -> 4.2 mb
+- Updated dependencies [2730902]
+- Updated dependencies [2730902]
+- Updated dependencies [2730902]
+- Updated dependencies [2730902]
+- Updated dependencies [2730902]
+- Updated dependencies [2730902]
+  - mcp-use@1.7.0
+
+## 0.9.0-canary.8
+
+### Patch Changes
+
+- mcp-use@1.7.0-canary.8
+
+## 0.9.0-canary.7
+
+### Patch Changes
+
+- caf8c7c: Fix: switched to https://pkg.pr.new/modelcontextprotocol/typescript-sdk/@modelcontextprotocol/sdk@1194 instead of @modelcontextprotocol/sdk to fix zod errors on deno runtime
+- Updated dependencies [caf8c7c]
+- Updated dependencies [caf8c7c]
+- Updated dependencies [caf8c7c]
+  - mcp-use@1.7.0-canary.7
+
+## 0.9.0-canary.6
+
+### Patch Changes
+
+- 38da68d: Fix: fix models and apikeys box in inspector chat
+- 38da68d: Fix: rendering of table, inline-code, code and images of inspector chat
+  - mcp-use@1.7.0-canary.6
+
+## 0.9.0-canary.5
+
+### Patch Changes
+
+- 4b917e0: feat: enable bundle minification 9.7mb -> 4.2 mb
+  - mcp-use@1.7.0-canary.5
+
+## 0.9.0-canary.4
+
+### Patch Changes
+
+- f44e60f: Fix padding of rpc panels
+  - mcp-use@1.7.0-canary.4
+
+## 0.9.0-canary.3
+
+### Patch Changes
+
+- Updated dependencies [0c8cb1a]
+  - mcp-use@1.7.0-canary.3
+
+## 0.9.0-canary.2
+
+### Patch Changes
+
+- 1ca9801: Optimized dependencies
+- Updated dependencies [1ca9801]
+  - mcp-use@1.7.0-canary.2
+
+## 0.9.0-canary.1
+
+### Minor Changes
+
+- 6bb0f3d: ## New Features
+  - **OAuth Authentication System**: Complete OAuth 2.0 support with built-in providers (Auth0, WorkOS, Supabase, Keycloak) and custom provider configuration
+  - **OAuth Middleware & Routes**: Server-side OAuth flow handling with automatic token management and session persistence
+  - **OAuth Callback Component**: Inspector now includes OAuth callback handling for authentication flows
+  - **Context Storage**: New async local storage system for request-scoped context in servers
+  - **Response Helpers**: Utility functions for standardized HTTP responses and error handling
+  - **Runtime Detection**: Auto-detection utilities for Node.js, Bun, and Deno environments
+  - **Server Authentication Examples**: Added OAuth examples for Auth0, WorkOS, and Supabase
+
+  ## Improvements
+  - **Enhanced useMcp Hook**: Improved connection management with better state handling and OAuth support
+  - **Enhanced Inspector Dashboard**: Added OAuth configuration UI and connection status indicators
+  - **Enhanced Browser Provider**: Better authentication flow handling with OAuth integration
+  - **Improved Auto-Connect**: Enhanced connection recovery and auto-reconnect logic
+  - **Enhanced Authentication Docs**: Comprehensive server-side authentication guide with OAuth setup instructions
+  - **Renamed Notification Example**: Cleaner naming convention (notification-example → notifications)
+  - **Enhanced Tool Types**: Improved type definitions for server-side tool handlers with context support
+  - **Enhanced HTTP Connectors**: Added OAuth token handling in HTTP transport layer
+
+  ## Documentation
+  - Added server authentication guide
+  - Enhanced client authentication documentation with OAuth flows
+  - Added notification examples and usage patterns
+  - Updated useMcp hook documentation with OAuth configuration
+
+### Patch Changes
+
+- Updated dependencies [6bb0f3d]
+  - mcp-use@1.7.0-canary.1
+
+## 0.8.3-canary.0
+
+### Patch Changes
+
+- 041da75: Fix scrolls in tools, resources, and prompts tab
+- 041da75: Feat: added enum input display for tools
+  - mcp-use@1.6.3-canary.0
+
+## 0.8.2
+
+### Patch Changes
+
+- 7e7c9a5: Downgrade mcp sdk to 22 due to https://github.com/modelcontextprotocol/typescript-sdk/issues/1182
+- Updated dependencies [7e7c9a5]
+  - mcp-use@1.6.2
+
+## 0.8.2-canary.0
+
+### Patch Changes
+
+- 0530e6a: Downgrade mcp sdk to 22 due to https://github.com/modelcontextprotocol/typescript-sdk/issues/1182
+- Updated dependencies [0530e6a]
+  - mcp-use@1.6.2-canary.0
+
+## 0.8.1
+
+### Patch Changes
+
+- 1a509bf: chore(deps): update @modelcontextprotocol/sdk to 1.23.0
+
+  Updated @modelcontextprotocol/sdk dependency from 1.20.0 to 1.23.0.
+
+- 1a509bf: remove console
+- c8e30ec: Fix new sdk types
+- Updated dependencies [1a509bf]
+- Updated dependencies [c60c055]
+- Updated dependencies [4950e56]
+- Updated dependencies [1a509bf]
+- Updated dependencies [c8e30ec]
+  - mcp-use@1.6.1
+
+## 0.8.1-canary.1
+
+### Patch Changes
+
+- mcp-use@1.6.1-canary.1
+
+## 0.8.1-canary.0
+
+### Patch Changes
+
+- 9974d55: chore(deps): update @modelcontextprotocol/sdk to 1.23.0
+
+  Updated @modelcontextprotocol/sdk dependency from 1.20.0 to 1.23.0.
+
+- 299ce65: remove console
+- 0e77821: Fix new sdk types
+- Updated dependencies [9974d55]
+- Updated dependencies [e9e4075]
+- Updated dependencies [32c6790]
+- Updated dependencies [299ce65]
+- Updated dependencies [0e77821]
+  - mcp-use@1.6.1-canary.0
+
+## 0.8.0
+
+### Minor Changes
+
+- 7e4dd9b: ## Features
+  - **Notifications**: Added bidirectional notification support between clients and servers. Clients can register notification handlers and servers can send targeted or broadcast notifications. Includes automatic handling of `list_changed` notifications per MCP spec.
+  - **Sampling**: Implemented LLM sampling capabilities allowing MCP tools to request completions from connected clients. Clients can provide a `samplingCallback` to handle sampling requests, enabling tools to leverage client-side LLMs.
+  - **Widget Build ID**: Added build ID support for widget UI resources to enable cache busting. Build IDs are automatically incorporated into widget URIs.
+  - **Inspector Enhancements**: Added notifications tab with real-time notification display and server capabilities modal showing supported MCP capabilities.
+
+  ## Improvements
+  - **Session Management**: Refactored HTTP transport to reuse sessions across requests instead of creating new transports per request. Added session tracking with configurable idle timeout (default 5 minutes) and automatic cleanup. Sessions now maintain state across multiple requests, enabling targeted notifications to specific clients.
+  - Enhanced HTTP connector with improved notification handling and sampling support
+  - Added roots support in connectors and session API (`setRoots()`, `getRoots()`) for better file system integration
+  - Added session event handling API (`session.on("notification")`) for registering notification handlers
+  - Added server methods for session management (`getActiveSessions()`, `sendNotificationToSession()`) enabling targeted client communication
+  - Added comprehensive examples for notifications and sampling features
+  - Enhanced documentation for notifications and sampling functionality
+
+- 7e4dd9b: ## New Features
+
+  ### OpenAI Apps SDK Integration (`mcp-use` package)
+  - **McpUseProvider** (`packages/mcp-use/src/react/McpUseProvider.tsx`) - New unified provider component that combines all common React setup for mcp-use widgets:
+    - Automatically includes StrictMode, ThemeProvider, BrowserRouter with automatic basename calculation
+    - Optional WidgetControls integration for debugging and view controls
+    - ErrorBoundary wrapper for error handling
+    - Auto-sizing support with ResizeObserver that calls `window.openai.notifyIntrinsicHeight()` for dynamic height updates
+    - Automatic basename calculation for proper routing in both dev proxy and production environments
+  - **WidgetControls** (`packages/mcp-use/src/react/WidgetControls.tsx`) - New component (752 lines) providing:
+    - Debug button overlay for displaying widget debug information (props, state, theme, display mode, etc.)
+    - View controls for fullscreen and picture-in-picture (PIP) modes
+    - Shared hover logic for all control buttons
+    - Customizable positioning (top-left, top-right, bottom-left, etc.)
+    - Interactive debug overlay with tool testing capabilities
+  - **useWidget hook** (`packages/mcp-use/src/react/useWidget.ts`) - New type-safe React adapter for OpenAI Apps SDK `window.openai` API:
+    - Automatic props extraction from `toolInput`
+    - Reactive state management subscribing to all OpenAI global changes
+    - Access to theme, display mode, safe areas, locale, user agent
+    - Action methods: `callTool`, `sendFollowUpMessage`, `openExternal`, `requestDisplayMode`, `setState`
+    - Type-safe with full TypeScript support
+  - **ErrorBoundary** (`packages/mcp-use/src/react/ErrorBoundary.tsx`) - New error boundary component for graceful error handling in widgets
+  - **Image** (`packages/mcp-use/src/react/Image.tsx`) - New image component that handles both data URLs and public file paths for widgets
+  - **ThemeProvider** (`packages/mcp-use/src/react/ThemeProvider.tsx`) - New theme provider component for consistent theme management across widgets
+
+  ### Inspector Widget Support
+  - **WidgetInspectorControls** (`packages/inspector/src/client/components/WidgetInspectorControls.tsx`) - New component (364 lines) providing:
+    - Inspector-specific widget controls and debugging interface
+    - Widget state inspection with real-time updates
+    - Debug information display including props, output, metadata, and state
+    - Integration with inspector's tool execution flow
+  - **Console Proxy Toggle** (`packages/inspector/src/client/components/IframeConsole.tsx` and `packages/inspector/src/client/hooks/useIframeConsole.ts`):
+    - New toggle option to proxy iframe console logs to the page console
+    - Persistent preference stored in localStorage
+    - Improved console UI with tooltips and better error/warning indicators
+    - Formatted console output with appropriate log levels
+
+  ### Enhanced Apps SDK Template
+  - **Product Search Result Widget** (`packages/create-mcp-use-app/src/templates/apps-sdk/resources/product-search-result/`):
+    - Complete ecommerce widget example with carousel, accordion, and product display components
+    - Carousel component (`components/Carousel.tsx`) with smooth animations and transitions
+    - Accordion components (`components/Accordion.tsx`, `components/AccordionItem.tsx`) for collapsible content
+    - Fruits API integration using `@tanstack/react-query` for data fetching
+    - 16 fruit product images added to `public/fruits/` directory (apple, apricot, avocado, banana, blueberry, cherries, coconut, grapes, lemon, mango, orange, pear, pineapple, plum, strawberry, watermelon)
+    - Enhanced product display with filtering and search capabilities
+  - **Updated Template Example** (`packages/create-mcp-use-app/src/templates/apps-sdk/index.ts`):
+    - New `get-brand-info` tool replacing the old `get-my-city` example
+    - Fruits API endpoint (`/api/fruits`) for template data
+    - Better example demonstrating brand information retrieval
+
+  ### CLI Widget Building Enhancements
+  - **Folder-based Widget Support** (`packages/cli/src/index.ts` and `packages/mcp-use/src/server/mcp-server.ts`):
+    - Support for widgets organized in folders with `widget.tsx` entry point
+    - Automatic detection of both single-file widgets and folder-based widgets
+    - Proper widget name resolution from folder names
+  - **Public Folder Support** (`packages/cli/src/index.ts`):
+    - Automatic copying of `public/` folder to `dist/public/` during build
+    - Support for static assets in widget templates
+  - **Enhanced SSR Configuration** (`packages/cli/src/index.ts`):
+    - Improved Vite SSR configuration with proper `noExternal` settings for `@openai/apps-sdk-ui` and `react-router`
+    - Better environment variable definitions for SSR context
+    - CSS handling plugin for SSR mode
+  - **Dev Server Public Assets** (`packages/mcp-use/src/server/mcp-server.ts`):
+    - New `/mcp-use/public/*` route for serving static files in development mode
+    - Proper content-type detection for various file types (images, fonts, etc.)
+
+  ## Improvements
+
+  ### Inspector Component Enhancements
+  - **OpenAIComponentRenderer** (`packages/inspector/src/client/components/OpenAIComponentRenderer.tsx`):
+    - Added `memo` wrapper for performance optimization
+    - Enhanced `notifyIntrinsicHeight` message handling with proper height calculation and capping for different display modes
+    - Improved theme support to prevent theme flashing on widget load by passing theme in widget data
+    - Widget state inspection support via `mcp-inspector:getWidgetState` message handling
+    - Better dev mode detection and widget URL generation
+    - Enhanced CSP handling with dev server URL support
+  - **ToolResultDisplay** (`packages/inspector/src/client/components/tools/ToolResultDisplay.tsx`) - Major refactor (894 lines changed):
+    - New formatted content display supporting multiple content types:
+      - Text content with JSON detection and formatting
+      - Image content with base64 data URL rendering
+      - Audio content with player controls
+      - Resource links with full metadata display
+      - Embedded resources with content preview
+    - Result history navigation with dropdown selector
+    - Relative time display (e.g., "2m ago", "1h ago")
+    - JSON validation and automatic formatting
+    - Maximize/restore functionality for result panel
+    - Better visual organization with content type labels
+  - **ToolsTab** (`packages/inspector/src/client/components/ToolsTab.tsx`):
+    - Resizable panels with collapse support using refs
+    - Maximize functionality for result panel that collapses left and top panels
+    - Better mobile view handling and responsive design
+    - Improved panel state management
+
+  ### Server-Side Improvements
+  - **shared-routes.ts** (`packages/inspector/src/server/shared-routes.ts`):
+    - Enhanced dev widget proxy with better asset loading
+    - Direct asset loading from dev server for simplicity (avoids HTML rewriting issues)
+    - CSP violation warnings injected into HTML for development debugging
+    - Improved Vite HMR WebSocket handling with direct connection to dev server
+    - Base tag injection for proper routing and dynamic module loading
+    - Better CSP header generation supporting both production and development modes
+  - **shared-utils.ts** and **shared-utils-browser.ts** (`packages/inspector/src/server/`):
+    - Enhanced widget security headers with dev server URL support
+    - Improved CSP configuration separating production and development resource domains
+    - Theme support in widget data for preventing theme flash
+    - Widget state inspection message handling
+    - `notifyIntrinsicHeight` API support in browser version
+    - MCP widget utilities injection (`__mcpPublicUrl`, `__getFile`) for Image component support
+    - Better history management to prevent redirects in inspector dev-widget proxy
+
+  ### Template Improvements
+  - **apps-sdk template** (`packages/create-mcp-use-app/src/templates/apps-sdk/`):
+    - Updated README with comprehensive documentation:
+      - Official UI components integration guide
+      - Ecommerce widgets documentation
+      - Better examples and usage instructions
+    - Enhanced example tool (`get-brand-info`) with complete brand information structure
+    - Fruits API endpoint for template data
+    - Better styling and theming support
+    - Removed outdated `display-weather.tsx` widget
+  - **Template Styles** (`packages/create-mcp-use-app/src/templates/apps-sdk/styles.css`):
+    - Enhanced CSS with better theming support
+    - Improved component styling
+
+  ### CLI Improvements
+  - **CLI index.ts** (`packages/cli/src/index.ts`):
+    - Better server waiting mechanism using `AbortController` for proper cleanup
+    - Enhanced fetch request with proper headers and signal handling
+    - Support for folder-based widgets with proper entry path resolution
+    - Public folder copying during build process
+    - Enhanced SSR configuration with proper Vite settings
+    - Better error handling throughout
+
+  ### Code Quality
+  - Improved logging throughout the codebase with better context and formatting
+  - Better code formatting and readability improvements
+  - Enhanced type safety with proper TypeScript types
+  - Better error handling with try-catch blocks and proper error messages
+  - Consistent code organization and structure
+
+  ## Bug Fixes
+
+  ### Widget Rendering
+  - Fixed iframe height calculation issues by properly handling `notifyIntrinsicHeight` messages and respecting display mode constraints
+  - Fixed theme flashing on widget load by passing theme in widget data and using it in initial API setup
+  - Fixed CSP header generation for dev mode by properly handling dev server URLs in CSP configuration
+  - Fixed asset loading in dev widget proxy by using direct URLs to dev server instead of proxy rewriting
+
+  ### Inspector Issues
+  - Fixed console logging in iframe by improving message handling and adding proxy toggle functionality
+  - Fixed widget state inspection by adding proper message handling for `mcp-inspector:getWidgetState` requests
+  - Fixed resizable panel collapse behavior by using refs and proper state management
+  - Fixed mobile view handling with better responsive design and view state management
+
+  ### Build Process
+  - Fixed widget metadata extraction by properly handling folder-based widgets and entry paths
+  - Fixed Vite SSR configuration by adding proper `noExternal` settings and environment definitions
+  - Fixed public asset copying by adding explicit copy step in build process
+  - Fixed widget name resolution for folder-based widgets by using folder name instead of file name
+
+  ### Documentation
+  - Fixed Supabase deployment script (`packages/mcp-use/examples/server/supabase/deploy.sh`) with updated project creation syntax
+  - Updated deployment command in Supabase documentation to reflect new project creation syntax
+  - Added server inspection URL to Supabase deployment documentation (`docs/typescript/server/deployment-supabase.mdx`)
+
+  ### Other Fixes
+  - Fixed history management to prevent unwanted redirects when running widgets in inspector dev-widget proxy
+  - Fixed macOS resource fork file exclusion in widget discovery (`.DS_Store`, `._*` files)
+  - Fixed Vite HMR WebSocket connection by using direct dev server URLs instead of proxy
+  - Fixed CSS imports in SSR mode by adding custom plugin to handle CSS files properly
+
+- 7e4dd9b: Release canary
+- 7e4dd9b: Added support for rpc messages logging in inspector
+
+### Patch Changes
+
+- 7e4dd9b: fix versions
+- 7e4dd9b: **Bug Fixes:**
+  - Fixed auto-connect proxy fallback behavior - now properly retries with proxy when direct connection fails
+  - Fixed connection config updates not applying when connection already exists
+  - Fixed connection wrapper not re-rendering when proxy config changes
+
+  **Improvements:**
+  - Auto-switch (proxy fallback) now automatically enabled during auto-connect flow
+  - Added automatic navigation to home page after connection failures
+  - Improved error messages for connection failures
+  - Enhanced state cleanup on connection retry and failure scenarios
+
+- 7e4dd9b: - **Security**: Added `https://*.openai.com` to Content Security Policy trusted domains for widgets
+  - **Type safety**: Exported `WidgetMetadata` type from `mcp-use/react` for better widget development experience
+  - **Templates**: Updated widget templates to use `WidgetMetadata` type and fixed CSS import paths (moved styles to resources directory)
+  - **Documentation**: Added comprehensive Apps SDK metadata documentation including CSP configuration examples
+- 7e4dd9b: - Fix OpenAI Apps SDK UI theme synchronization by setting data-theme attribute and color-scheme on iframe document
+  - Replace hardcoded Tailwind color classes with design tokens in create-mcp-use-app template components
+  - Fix collapsed panel size from 5 to 6 in Prompts, Resources, and Tools tabs
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+- Updated dependencies [7e4dd9b]
+  - mcp-use@1.6.0
+
+## 0.7.1-canary.7
+
+### Patch Changes
+
+- 94b9824: **Bug Fixes:**
+  - Fixed auto-connect proxy fallback behavior - now properly retries with proxy when direct connection fails
+  - Fixed connection config updates not applying when connection already exists
+  - Fixed connection wrapper not re-rendering when proxy config changes
+
+  **Improvements:**
+  - Auto-switch (proxy fallback) now automatically enabled during auto-connect flow
+  - Added automatic navigation to home page after connection failures
+  - Improved error messages for connection failures
+  - Enhanced state cleanup on connection retry and failure scenarios
+
+- Updated dependencies [94b9824]
+  - mcp-use@1.5.1-canary.7
+
+## 0.7.1-canary.6
+
+### Patch Changes
+
+- Updated dependencies [a3295a0]
+  - mcp-use@1.5.1-canary.6
+
+## 0.7.1-canary.5
+
+### Patch Changes
+
+- Updated dependencies [95fa604]
+  - mcp-use@1.5.1-canary.5
+
+## 0.7.1-canary.4
+
+### Patch Changes
+
+- Updated dependencies [a93befb]
+  - mcp-use@1.5.1-canary.4
+
+## 0.7.1-canary.3
+
+### Patch Changes
+
+- Updated dependencies [ccc2df3]
+  - mcp-use@1.5.1-canary.3
+
+## 0.7.1-canary.2
+
+### Patch Changes
+
+- Updated dependencies [e5e8e1b]
+  - mcp-use@1.5.1-canary.2
+
+## 0.7.1-canary.1
+
+### Patch Changes
+
+- Updated dependencies [4ca7772]
+  - mcp-use@1.5.1-canary.1
+
+## 0.7.1-canary.0
+
+### Patch Changes
+
+- 12a88c7: fix versions
+- Updated dependencies [12a88c7]
+  - mcp-use@1.5.1-canary.0
+
+## 0.7.0
+
+### Minor Changes
+
+- 266a445: ## New Features
+
+  ### OpenAI Apps SDK Integration (`mcp-use` package)
+  - **McpUseProvider** (`packages/mcp-use/src/react/McpUseProvider.tsx`) - New unified provider component that combines all common React setup for mcp-use widgets:
+    - Automatically includes StrictMode, ThemeProvider, BrowserRouter with automatic basename calculation
+    - Optional WidgetControls integration for debugging and view controls
+    - ErrorBoundary wrapper for error handling
+    - Auto-sizing support with ResizeObserver that calls `window.openai.notifyIntrinsicHeight()` for dynamic height updates
+    - Automatic basename calculation for proper routing in both dev proxy and production environments
+  - **WidgetControls** (`packages/mcp-use/src/react/WidgetControls.tsx`) - New component (752 lines) providing:
+    - Debug button overlay for displaying widget debug information (props, state, theme, display mode, etc.)
+    - View controls for fullscreen and picture-in-picture (PIP) modes
+    - Shared hover logic for all control buttons
+    - Customizable positioning (top-left, top-right, bottom-left, etc.)
+    - Interactive debug overlay with tool testing capabilities
+  - **useWidget hook** (`packages/mcp-use/src/react/useWidget.ts`) - New type-safe React adapter for OpenAI Apps SDK `window.openai` API:
+    - Automatic props extraction from `toolInput`
+    - Reactive state management subscribing to all OpenAI global changes
+    - Access to theme, display mode, safe areas, locale, user agent
+    - Action methods: `callTool`, `sendFollowUpMessage`, `openExternal`, `requestDisplayMode`, `setState`
+    - Type-safe with full TypeScript support
+  - **ErrorBoundary** (`packages/mcp-use/src/react/ErrorBoundary.tsx`) - New error boundary component for graceful error handling in widgets
+  - **Image** (`packages/mcp-use/src/react/Image.tsx`) - New image component that handles both data URLs and public file paths for widgets
+  - **ThemeProvider** (`packages/mcp-use/src/react/ThemeProvider.tsx`) - New theme provider component for consistent theme management across widgets
+
+  ### Inspector Widget Support
+  - **WidgetInspectorControls** (`packages/inspector/src/client/components/WidgetInspectorControls.tsx`) - New component (364 lines) providing:
+    - Inspector-specific widget controls and debugging interface
+    - Widget state inspection with real-time updates
+    - Debug information display including props, output, metadata, and state
+    - Integration with inspector's tool execution flow
+  - **Console Proxy Toggle** (`packages/inspector/src/client/components/IframeConsole.tsx` and `packages/inspector/src/client/hooks/useIframeConsole.ts`):
+    - New toggle option to proxy iframe console logs to the page console
+    - Persistent preference stored in localStorage
+    - Improved console UI with tooltips and better error/warning indicators
+    - Formatted console output with appropriate log levels
+
+  ### Enhanced Apps SDK Template
+  - **Product Search Result Widget** (`packages/create-mcp-use-app/src/templates/apps-sdk/resources/product-search-result/`):
+    - Complete ecommerce widget example with carousel, accordion, and product display components
+    - Carousel component (`components/Carousel.tsx`) with smooth animations and transitions
+    - Accordion components (`components/Accordion.tsx`, `components/AccordionItem.tsx`) for collapsible content
+    - Fruits API integration using `@tanstack/react-query` for data fetching
+    - 16 fruit product images added to `public/fruits/` directory (apple, apricot, avocado, banana, blueberry, cherries, coconut, grapes, lemon, mango, orange, pear, pineapple, plum, strawberry, watermelon)
+    - Enhanced product display with filtering and search capabilities
+  - **Updated Template Example** (`packages/create-mcp-use-app/src/templates/apps-sdk/index.ts`):
+    - New `get-brand-info` tool replacing the old `get-my-city` example
+    - Fruits API endpoint (`/api/fruits`) for template data
+    - Better example demonstrating brand information retrieval
+
+  ### CLI Widget Building Enhancements
+  - **Folder-based Widget Support** (`packages/cli/src/index.ts` and `packages/mcp-use/src/server/mcp-server.ts`):
+    - Support for widgets organized in folders with `widget.tsx` entry point
+    - Automatic detection of both single-file widgets and folder-based widgets
+    - Proper widget name resolution from folder names
+  - **Public Folder Support** (`packages/cli/src/index.ts`):
+    - Automatic copying of `public/` folder to `dist/public/` during build
+    - Support for static assets in widget templates
+  - **Enhanced SSR Configuration** (`packages/cli/src/index.ts`):
+    - Improved Vite SSR configuration with proper `noExternal` settings for `@openai/apps-sdk-ui` and `react-router`
+    - Better environment variable definitions for SSR context
+    - CSS handling plugin for SSR mode
+  - **Dev Server Public Assets** (`packages/mcp-use/src/server/mcp-server.ts`):
+    - New `/mcp-use/public/*` route for serving static files in development mode
+    - Proper content-type detection for various file types (images, fonts, etc.)
+
+  ## Improvements
+
+  ### Inspector Component Enhancements
+  - **OpenAIComponentRenderer** (`packages/inspector/src/client/components/OpenAIComponentRenderer.tsx`):
+    - Added `memo` wrapper for performance optimization
+    - Enhanced `notifyIntrinsicHeight` message handling with proper height calculation and capping for different display modes
+    - Improved theme support to prevent theme flashing on widget load by passing theme in widget data
+    - Widget state inspection support via `mcp-inspector:getWidgetState` message handling
+    - Better dev mode detection and widget URL generation
+    - Enhanced CSP handling with dev server URL support
+  - **ToolResultDisplay** (`packages/inspector/src/client/components/tools/ToolResultDisplay.tsx`) - Major refactor (894 lines changed):
+    - New formatted content display supporting multiple content types:
+      - Text content with JSON detection and formatting
+      - Image content with base64 data URL rendering
+      - Audio content with player controls
+      - Resource links with full metadata display
+      - Embedded resources with content preview
+    - Result history navigation with dropdown selector
+    - Relative time display (e.g., "2m ago", "1h ago")
+    - JSON validation and automatic formatting
+    - Maximize/restore functionality for result panel
+    - Better visual organization with content type labels
+  - **ToolsTab** (`packages/inspector/src/client/components/ToolsTab.tsx`):
+    - Resizable panels with collapse support using refs
+    - Maximize functionality for result panel that collapses left and top panels
+    - Better mobile view handling and responsive design
+    - Improved panel state management
+
+  ### Server-Side Improvements
+  - **shared-routes.ts** (`packages/inspector/src/server/shared-routes.ts`):
+    - Enhanced dev widget proxy with better asset loading
+    - Direct asset loading from dev server for simplicity (avoids HTML rewriting issues)
+    - CSP violation warnings injected into HTML for development debugging
+    - Improved Vite HMR WebSocket handling with direct connection to dev server
+    - Base tag injection for proper routing and dynamic module loading
+    - Better CSP header generation supporting both production and development modes
+  - **shared-utils.ts** and **shared-utils-browser.ts** (`packages/inspector/src/server/`):
+    - Enhanced widget security headers with dev server URL support
+    - Improved CSP configuration separating production and development resource domains
+    - Theme support in widget data for preventing theme flash
+    - Widget state inspection message handling
+    - `notifyIntrinsicHeight` API support in browser version
+    - MCP widget utilities injection (`__mcpPublicUrl`, `__getFile`) for Image component support
+    - Better history management to prevent redirects in inspector dev-widget proxy
+
+  ### Template Improvements
+  - **apps-sdk template** (`packages/create-mcp-use-app/src/templates/apps-sdk/`):
+    - Updated README with comprehensive documentation:
+      - Official UI components integration guide
+      - Ecommerce widgets documentation
+      - Better examples and usage instructions
+    - Enhanced example tool (`get-brand-info`) with complete brand information structure
+    - Fruits API endpoint for template data
+    - Better styling and theming support
+    - Removed outdated `display-weather.tsx` widget
+  - **Template Styles** (`packages/create-mcp-use-app/src/templates/apps-sdk/styles.css`):
+    - Enhanced CSS with better theming support
+    - Improved component styling
+
+  ### CLI Improvements
+  - **CLI index.ts** (`packages/cli/src/index.ts`):
+    - Better server waiting mechanism using `AbortController` for proper cleanup
+    - Enhanced fetch request with proper headers and signal handling
+    - Support for folder-based widgets with proper entry path resolution
+    - Public folder copying during build process
+    - Enhanced SSR configuration with proper Vite settings
+    - Better error handling throughout
+
+  ### Code Quality
+  - Improved logging throughout the codebase with better context and formatting
+  - Better code formatting and readability improvements
+  - Enhanced type safety with proper TypeScript types
+  - Better error handling with try-catch blocks and proper error messages
+  - Consistent code organization and structure
+
+  ## Bug Fixes
+
+  ### Widget Rendering
+  - Fixed iframe height calculation issues by properly handling `notifyIntrinsicHeight` messages and respecting display mode constraints
+  - Fixed theme flashing on widget load by passing theme in widget data and using it in initial API setup
+  - Fixed CSP header generation for dev mode by properly handling dev server URLs in CSP configuration
+  - Fixed asset loading in dev widget proxy by using direct URLs to dev server instead of proxy rewriting
+
+  ### Inspector Issues
+  - Fixed console logging in iframe by improving message handling and adding proxy toggle functionality
+  - Fixed widget state inspection by adding proper message handling for `mcp-inspector:getWidgetState` requests
+  - Fixed resizable panel collapse behavior by using refs and proper state management
+  - Fixed mobile view handling with better responsive design and view state management
+
+  ### Build Process
+  - Fixed widget metadata extraction by properly handling folder-based widgets and entry paths
+  - Fixed Vite SSR configuration by adding proper `noExternal` settings and environment definitions
+  - Fixed public asset copying by adding explicit copy step in build process
+  - Fixed widget name resolution for folder-based widgets by using folder name instead of file name
+
+  ### Documentation
+  - Fixed Supabase deployment script (`packages/mcp-use/examples/server/supabase/deploy.sh`) with updated project creation syntax
+  - Updated deployment command in Supabase documentation to reflect new project creation syntax
+  - Added server inspection URL to Supabase deployment documentation (`docs/typescript/server/deployment-supabase.mdx`)
+
+  ### Other Fixes
+  - Fixed history management to prevent unwanted redirects when running widgets in inspector dev-widget proxy
+  - Fixed macOS resource fork file exclusion in widget discovery (`.DS_Store`, `._*` files)
+  - Fixed Vite HMR WebSocket connection by using direct dev server URLs instead of proxy
+  - Fixed CSS imports in SSR mode by adding custom plugin to handle CSS files properly
+
+- 266a445: Release canary
+- 266a445: Added support for rpc messages logging in inspector
+
+### Patch Changes
+
+- Updated dependencies [266a445]
+- Updated dependencies [266a445]
+- Updated dependencies [266a445]
+- Updated dependencies [266a445]
+  - mcp-use@1.5.0
+
+## 0.7.0-canary.3
+
+### Minor Changes
+
+- 018395c: Release canary
+
+### Patch Changes
+
+- Updated dependencies [018395c]
+  - mcp-use@1.5.0-canary.3
+
+## 0.7.0-canary.2
+
+### Minor Changes
+
+- 229a3a3: Added support for rpc messages logging in inspector
+
+### Patch Changes
+
+- Updated dependencies [229a3a3]
+  - mcp-use@1.5.0-canary.2
+
+## 0.7.0-canary.1
+
+### Minor Changes
+
+- fc64bd7: ## New Features
+
+  ### OpenAI Apps SDK Integration (`mcp-use` package)
+  - **McpUseProvider** (`packages/mcp-use/src/react/McpUseProvider.tsx`) - New unified provider component that combines all common React setup for mcp-use widgets:
+    - Automatically includes StrictMode, ThemeProvider, BrowserRouter with automatic basename calculation
+    - Optional WidgetControls integration for debugging and view controls
+    - ErrorBoundary wrapper for error handling
+    - Auto-sizing support with ResizeObserver that calls `window.openai.notifyIntrinsicHeight()` for dynamic height updates
+    - Automatic basename calculation for proper routing in both dev proxy and production environments
+  - **WidgetControls** (`packages/mcp-use/src/react/WidgetControls.tsx`) - New component (752 lines) providing:
+    - Debug button overlay for displaying widget debug information (props, state, theme, display mode, etc.)
+    - View controls for fullscreen and picture-in-picture (PIP) modes
+    - Shared hover logic for all control buttons
+    - Customizable positioning (top-left, top-right, bottom-left, etc.)
+    - Interactive debug overlay with tool testing capabilities
+  - **useWidget hook** (`packages/mcp-use/src/react/useWidget.ts`) - New type-safe React adapter for OpenAI Apps SDK `window.openai` API:
+    - Automatic props extraction from `toolInput`
+    - Reactive state management subscribing to all OpenAI global changes
+    - Access to theme, display mode, safe areas, locale, user agent
+    - Action methods: `callTool`, `sendFollowUpMessage`, `openExternal`, `requestDisplayMode`, `setState`
+    - Type-safe with full TypeScript support
+  - **ErrorBoundary** (`packages/mcp-use/src/react/ErrorBoundary.tsx`) - New error boundary component for graceful error handling in widgets
+  - **Image** (`packages/mcp-use/src/react/Image.tsx`) - New image component that handles both data URLs and public file paths for widgets
+  - **ThemeProvider** (`packages/mcp-use/src/react/ThemeProvider.tsx`) - New theme provider component for consistent theme management across widgets
+
+  ### Inspector Widget Support
+  - **WidgetInspectorControls** (`packages/inspector/src/client/components/WidgetInspectorControls.tsx`) - New component (364 lines) providing:
+    - Inspector-specific widget controls and debugging interface
+    - Widget state inspection with real-time updates
+    - Debug information display including props, output, metadata, and state
+    - Integration with inspector's tool execution flow
+  - **Console Proxy Toggle** (`packages/inspector/src/client/components/IframeConsole.tsx` and `packages/inspector/src/client/hooks/useIframeConsole.ts`):
+    - New toggle option to proxy iframe console logs to the page console
+    - Persistent preference stored in localStorage
+    - Improved console UI with tooltips and better error/warning indicators
+    - Formatted console output with appropriate log levels
+
+  ### Enhanced Apps SDK Template
+  - **Product Search Result Widget** (`packages/create-mcp-use-app/src/templates/apps-sdk/resources/product-search-result/`):
+    - Complete ecommerce widget example with carousel, accordion, and product display components
+    - Carousel component (`components/Carousel.tsx`) with smooth animations and transitions
+    - Accordion components (`components/Accordion.tsx`, `components/AccordionItem.tsx`) for collapsible content
+    - Fruits API integration using `@tanstack/react-query` for data fetching
+    - 16 fruit product images added to `public/fruits/` directory (apple, apricot, avocado, banana, blueberry, cherries, coconut, grapes, lemon, mango, orange, pear, pineapple, plum, strawberry, watermelon)
+    - Enhanced product display with filtering and search capabilities
+  - **Updated Template Example** (`packages/create-mcp-use-app/src/templates/apps-sdk/index.ts`):
+    - New `get-brand-info` tool replacing the old `get-my-city` example
+    - Fruits API endpoint (`/api/fruits`) for template data
+    - Better example demonstrating brand information retrieval
+
+  ### CLI Widget Building Enhancements
+  - **Folder-based Widget Support** (`packages/cli/src/index.ts` and `packages/mcp-use/src/server/mcp-server.ts`):
+    - Support for widgets organized in folders with `widget.tsx` entry point
+    - Automatic detection of both single-file widgets and folder-based widgets
+    - Proper widget name resolution from folder names
+  - **Public Folder Support** (`packages/cli/src/index.ts`):
+    - Automatic copying of `public/` folder to `dist/public/` during build
+    - Support for static assets in widget templates
+  - **Enhanced SSR Configuration** (`packages/cli/src/index.ts`):
+    - Improved Vite SSR configuration with proper `noExternal` settings for `@openai/apps-sdk-ui` and `react-router`
+    - Better environment variable definitions for SSR context
+    - CSS handling plugin for SSR mode
+  - **Dev Server Public Assets** (`packages/mcp-use/src/server/mcp-server.ts`):
+    - New `/mcp-use/public/*` route for serving static files in development mode
+    - Proper content-type detection for various file types (images, fonts, etc.)
+
+  ## Improvements
+
+  ### Inspector Component Enhancements
+  - **OpenAIComponentRenderer** (`packages/inspector/src/client/components/OpenAIComponentRenderer.tsx`):
+    - Added `memo` wrapper for performance optimization
+    - Enhanced `notifyIntrinsicHeight` message handling with proper height calculation and capping for different display modes
+    - Improved theme support to prevent theme flashing on widget load by passing theme in widget data
+    - Widget state inspection support via `mcp-inspector:getWidgetState` message handling
+    - Better dev mode detection and widget URL generation
+    - Enhanced CSP handling with dev server URL support
+  - **ToolResultDisplay** (`packages/inspector/src/client/components/tools/ToolResultDisplay.tsx`) - Major refactor (894 lines changed):
+    - New formatted content display supporting multiple content types:
+      - Text content with JSON detection and formatting
+      - Image content with base64 data URL rendering
+      - Audio content with player controls
+      - Resource links with full metadata display
+      - Embedded resources with content preview
+    - Result history navigation with dropdown selector
+    - Relative time display (e.g., "2m ago", "1h ago")
+    - JSON validation and automatic formatting
+    - Maximize/restore functionality for result panel
+    - Better visual organization with content type labels
+  - **ToolsTab** (`packages/inspector/src/client/components/ToolsTab.tsx`):
+    - Resizable panels with collapse support using refs
+    - Maximize functionality for result panel that collapses left and top panels
+    - Better mobile view handling and responsive design
+    - Improved panel state management
+
+  ### Server-Side Improvements
+  - **shared-routes.ts** (`packages/inspector/src/server/shared-routes.ts`):
+    - Enhanced dev widget proxy with better asset loading
+    - Direct asset loading from dev server for simplicity (avoids HTML rewriting issues)
+    - CSP violation warnings injected into HTML for development debugging
+    - Improved Vite HMR WebSocket handling with direct connection to dev server
+    - Base tag injection for proper routing and dynamic module loading
+    - Better CSP header generation supporting both production and development modes
+  - **shared-utils.ts** and **shared-utils-browser.ts** (`packages/inspector/src/server/`):
+    - Enhanced widget security headers with dev server URL support
+    - Improved CSP configuration separating production and development resource domains
+    - Theme support in widget data for preventing theme flash
+    - Widget state inspection message handling
+    - `notifyIntrinsicHeight` API support in browser version
+    - MCP widget utilities injection (`__mcpPublicUrl`, `__getFile`) for Image component support
+    - Better history management to prevent redirects in inspector dev-widget proxy
+
+  ### Template Improvements
+  - **apps-sdk template** (`packages/create-mcp-use-app/src/templates/apps-sdk/`):
+    - Updated README with comprehensive documentation:
+      - Official UI components integration guide
+      - Ecommerce widgets documentation
+      - Better examples and usage instructions
+    - Enhanced example tool (`get-brand-info`) with complete brand information structure
+    - Fruits API endpoint for template data
+    - Better styling and theming support
+    - Removed outdated `display-weather.tsx` widget
+  - **Template Styles** (`packages/create-mcp-use-app/src/templates/apps-sdk/styles.css`):
+    - Enhanced CSS with better theming support
+    - Improved component styling
+
+  ### CLI Improvements
+  - **CLI index.ts** (`packages/cli/src/index.ts`):
+    - Better server waiting mechanism using `AbortController` for proper cleanup
+    - Enhanced fetch request with proper headers and signal handling
+    - Support for folder-based widgets with proper entry path resolution
+    - Public folder copying during build process
+    - Enhanced SSR configuration with proper Vite settings
+    - Better error handling throughout
+
+  ### Code Quality
+  - Improved logging throughout the codebase with better context and formatting
+  - Better code formatting and readability improvements
+  - Enhanced type safety with proper TypeScript types
+  - Better error handling with try-catch blocks and proper error messages
+  - Consistent code organization and structure
+
+  ## Bug Fixes
+
+  ### Widget Rendering
+  - Fixed iframe height calculation issues by properly handling `notifyIntrinsicHeight` messages and respecting display mode constraints
+  - Fixed theme flashing on widget load by passing theme in widget data and using it in initial API setup
+  - Fixed CSP header generation for dev mode by properly handling dev server URLs in CSP configuration
+  - Fixed asset loading in dev widget proxy by using direct URLs to dev server instead of proxy rewriting
+
+  ### Inspector Issues
+  - Fixed console logging in iframe by improving message handling and adding proxy toggle functionality
+  - Fixed widget state inspection by adding proper message handling for `mcp-inspector:getWidgetState` requests
+  - Fixed resizable panel collapse behavior by using refs and proper state management
+  - Fixed mobile view handling with better responsive design and view state management
+
+  ### Build Process
+  - Fixed widget metadata extraction by properly handling folder-based widgets and entry paths
+  - Fixed Vite SSR configuration by adding proper `noExternal` settings and environment definitions
+  - Fixed public asset copying by adding explicit copy step in build process
+  - Fixed widget name resolution for folder-based widgets by using folder name instead of file name
+
+  ### Documentation
+  - Fixed Supabase deployment script (`packages/mcp-use/examples/server/supabase/deploy.sh`) with updated project creation syntax
+  - Updated deployment command in Supabase documentation to reflect new project creation syntax
+  - Added server inspection URL to Supabase deployment documentation (`docs/typescript/server/deployment-supabase.mdx`)
+
+  ### Other Fixes
+  - Fixed history management to prevent unwanted redirects when running widgets in inspector dev-widget proxy
+  - Fixed macOS resource fork file exclusion in widget discovery (`.DS_Store`, `._*` files)
+  - Fixed Vite HMR WebSocket connection by using direct dev server URLs instead of proxy
+  - Fixed CSS imports in SSR mode by adding custom plugin to handle CSS files properly
+
+### Patch Changes
+
+- Updated dependencies [fc64bd7]
+  - mcp-use@1.5.0-canary.1
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [95c9d9f]
+- Updated dependencies [95c9d9f]
+  - mcp-use@1.4.1
+
+## 0.6.1-canary.1
+
+### Patch Changes
+
+- Updated dependencies [0975320]
+  - mcp-use@1.4.1-canary.1
+
+## 0.6.1-canary.0
+
+### Patch Changes
+
+- Updated dependencies [d434691]
+  - mcp-use@1.4.1-canary.0
+
+## 0.6.0
+
+### Minor Changes
+
+- 33e4a68: Responsive design for inspector :O
+
+### Patch Changes
+
+- 33e4a68: Remove debugger button from pip mode to avoid overlap with close button
+- Updated dependencies [33e4a68]
+  - mcp-use@1.4.0
+
+## 0.6.0-canary.3
+
+### Patch Changes
+
+- Updated dependencies [35fd9ae]
+  - mcp-use@1.4.0-canary.3
+
+## 0.6.0-canary.2
+
+### Patch Changes
+
+- mcp-use@1.3.4-canary.2
+
+## 0.6.0-canary.1
+
+### Patch Changes
+
+- 451c507: Remove debugger button from pip mode to avoid overlap with close button
+  - mcp-use@1.3.4-canary.1
+
+## 0.6.0-canary.0
+
+### Minor Changes
+
+- 1f4a798: Responsive design for inspector :O
+
+### Patch Changes
+
+- mcp-use@1.3.4-canary.0
+
+## 0.5.3
+
+### Patch Changes
+
+- e8ec993: Fix formatting of object tool input
+- e8ec993: Add support for displaying console logs of widgets in the inspector preview panel
+- e8ec993: - Add emulation of openai api to the inspector
+  - Add utility component WidgetFullscreenWrapper: render full screen and pip buttons
+  - Add utility component WidgetDebugger: shows an overlay with openai metadata for debugging ChatGPT integration
+- e8ec993: Fix connection edit button in inspector
+- e8ec993: Fix button overflow in connect form
+- e8ec993: Dynamically load models for the chat
+- Updated dependencies [e8ec993]
+- Updated dependencies [e8ec993]
+- Updated dependencies [e8ec993]
+  - mcp-use@1.3.3
+
+## 0.5.3-canary.8
+
+### Patch Changes
+
+- 329ce35: Dynamically load models for the chat
+  - mcp-use@1.3.3-canary.8
+
+## 0.5.3-canary.7
+
+### Patch Changes
+
+- 1ed0ab8: Fix formatting of object tool input
+  - mcp-use@1.3.3-canary.7
+
+## 0.5.3-canary.6
+
+### Patch Changes
+
+- ba654db: Fix button overflow in connect form
+  - mcp-use@1.3.3-canary.6
+
+## 0.5.3-canary.5
+
+### Patch Changes
+
+- f971dd8: Fix connection edit button in inspector
+  - mcp-use@1.3.3-canary.5
+
+## 0.5.3-canary.4
+
+### Patch Changes
+
+- 68d0d4c: - Add emulation of openai api to the inspector
+  - Add utility component WidgetFullscreenWrapper: render full screen and pip buttons
+  - Add utility component WidgetDebugger: shows an overlay with openai metadata for debugging ChatGPT integration
+- Updated dependencies [68d0d4c]
+  - mcp-use@1.3.3-canary.4
+
+## 0.5.3-canary.3
+
+### Patch Changes
+
+- Updated dependencies [d4dc001]
+  - mcp-use@1.3.3-canary.3
+
+## 0.5.3-canary.2
+
+### Patch Changes
+
+- Updated dependencies [9fc286c]
+  - mcp-use@1.3.3-canary.2
+
+## 0.5.3-canary.1
+
+### Patch Changes
+
+- mcp-use@1.3.3-canary.1
+
+## 0.5.3-canary.0
+
+### Patch Changes
+
+- d4c246a: Add support for displaying console logs of widgets in the inspector preview panel
+  - mcp-use@1.3.3-canary.0
+
+## 0.5.2
+
+### Patch Changes
+
+- 835d367: - Updated the version of @modelcontextprotocol/sdk to 1.22.0 in both inspector and mcp-use package.json files.
+- 835d367: Hanlde large json responses by showing a preview and a download button
+- 835d367: chore: update dependencies
+- Updated dependencies [835d367]
+- Updated dependencies [835d367]
+- Updated dependencies [835d367]
+  - mcp-use@1.3.2
+
+## 0.5.2-canary.5
+
+### Patch Changes
+
+- Updated dependencies [d9e3ae2]
+  - mcp-use@1.3.2-canary.5
+
+## 0.5.2-canary.4
+
+### Patch Changes
+
+- 9db6706: Hanlde large json responses by showing a preview and a download button
+  - mcp-use@1.3.2-canary.4
+
+## 0.5.2-canary.3
+
+### Patch Changes
+
+- mcp-use@1.3.2-canary.3
+
+## 0.5.2-canary.2
+
+### Patch Changes
+
+- mcp-use@1.3.2-canary.2
+
+## 0.5.2-canary.1
+
+### Patch Changes
+
+- mcp-use@1.3.2-canary.1
+
+## 0.5.2-canary.0
+
+### Patch Changes
+
+- 2ebe233: - Updated the version of @modelcontextprotocol/sdk to 1.22.0 in both inspector and mcp-use package.json files.
+- 2ebe233: chore: update dependencies
+- Updated dependencies [2ebe233]
+- Updated dependencies [2ebe233]
+  - mcp-use@1.3.2-canary.0
+
+## 0.5.1
+
+### Patch Changes
+
+- 91fdcee: - Updated the version of @modelcontextprotocol/sdk to 1.22.0 in both inspector and mcp-use package.json files.
+- 91fdcee: chore: update dependencies
+- Updated dependencies [91fdcee]
+- Updated dependencies [91fdcee]
+  - mcp-use@1.3.1
+
+## 0.5.1-canary.0
+
+### Patch Changes
+
+- 9ece7fe: - Updated the version of @modelcontextprotocol/sdk to 1.22.0 in both inspector and mcp-use package.json files.
+- 9ece7fe: chore: update dependencies
+- Updated dependencies [9ece7fe]
+- Updated dependencies [9ece7fe]
+  - mcp-use@1.3.1-canary.0
+
+## 0.5.0
+
+### Minor Changes
+
+- 26e1162: Migrated mcp-use server from Express to Hono framework to enable edge runtime support (Cloudflare Workers, Deno Deploy, Supabase Edge Functions). Added runtime detection for Deno/Node.js environments, Connect middleware adapter for compatibility, and `getHandler()` method for edge deployment. Updated dependencies: added `hono` and `@hono/node-server`, moved `connect` and `node-mocks-http` to optional dependencies, removed `express` and `cors` from peer dependencies.
+
+  Added Supabase deployment documentation and example templates to create-mcp-use-app for easier edge runtime deployment.
+
+- 26e1162: ### MCPAgent Message Detection Improvements (fix #446)
+
+  Fixed issue where `agent.run()` returned "No output generated" even when valid output was produced, caused by messages not being AIMessage instances after serialization/deserialization across module boundaries. Added robust message detection helpers (`_isAIMessageLike`, `_isHumanMessageLike`, `_isToolMessageLike`) that handle multiple message formats (class instances, plain objects with `type`/`role` properties, objects with `getType()` methods) to support version mismatches and different LangChain message formats. Includes comprehensive test coverage for message detection edge cases.
+
+  ### Server Base URL Fix
+
+  Fixed server base URL handling to ensure proper connection and routing in edge runtime environments, resolving issues with URL construction and path resolution.
+
+  ### Inspector Enhancements
+
+  Improved auto-connection logic with better error handling and retry mechanisms. Enhanced resource display components and OpenAI component renderer for better reliability and user experience. Updated connection context management for more robust multi-server support.
+
+  ### Supabase Deployment Example
+
+  Added complete Supabase deployment example with Deno-compatible server implementation, deployment scripts, and configuration templates to `create-mcp-use-app` for easier edge runtime deployment.
+
+  ### React Hook and CLI Improvements
+
+  Enhanced `useMcp` hook with better error handling and connection state management for browser-based MCP clients. Updated CLI with improved server URL handling and connection management.
+
+### Patch Changes
+
+- f25018a: Removed non functional setting button and removed tool input formatting that made it annoying to type arrays
+- Updated dependencies [26e1162]
+- Updated dependencies [26e1162]
+  - mcp-use@1.3.0
+
+## 0.5.0-canary.1
+
+### Minor Changes
+
+- 9d0be46: ### MCPAgent Message Detection Improvements (fix #446)
+
+  Fixed issue where `agent.run()` returned "No output generated" even when valid output was produced, caused by messages not being AIMessage instances after serialization/deserialization across module boundaries. Added robust message detection helpers (`_isAIMessageLike`, `_isHumanMessageLike`, `_isToolMessageLike`) that handle multiple message formats (class instances, plain objects with `type`/`role` properties, objects with `getType()` methods) to support version mismatches and different LangChain message formats. Includes comprehensive test coverage for message detection edge cases.
+
+  ### Server Base URL Fix
+
+  Fixed server base URL handling to ensure proper connection and routing in edge runtime environments, resolving issues with URL construction and path resolution.
+
+  ### Inspector Enhancements
+
+  Improved auto-connection logic with better error handling and retry mechanisms. Enhanced resource display components and OpenAI component renderer for better reliability and user experience. Updated connection context management for more robust multi-server support.
+
+  ### Supabase Deployment Example
+
+  Added complete Supabase deployment example with Deno-compatible server implementation, deployment scripts, and configuration templates to `create-mcp-use-app` for easier edge runtime deployment.
+
+  ### React Hook and CLI Improvements
+
+  Enhanced `useMcp` hook with better error handling and connection state management for browser-based MCP clients. Updated CLI with improved server URL handling and connection management.
+
+### Patch Changes
+
+- Updated dependencies [9d0be46]
+  - mcp-use@1.3.0-canary.1
+
+## 0.5.0-canary.0
+
+### Minor Changes
+
+- 3db425d: Migrated mcp-use server from Express to Hono framework to enable edge runtime support (Cloudflare Workers, Deno Deploy, Supabase Edge Functions). Added runtime detection for Deno/Node.js environments, Connect middleware adapter for compatibility, and `getHandler()` method for edge deployment. Updated dependencies: added `hono` and `@hono/node-server`, moved `connect` and `node-mocks-http` to optional dependencies, removed `express` and `cors` from peer dependencies.
+
+  Added Supabase deployment documentation and example templates to create-mcp-use-app for easier edge runtime deployment.
+
+### Patch Changes
+
+- f25018a: Removed non functional setting button and removed tool input formatting that made it annoying to type arrays
+- Updated dependencies [3db425d]
+  - mcp-use@1.3.0-canary.0
+
 ## 0.4.13
 
 ### Patch Changes

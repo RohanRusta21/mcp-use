@@ -4,8 +4,10 @@ on:
   push:
     branches:
       - main
+      - canary
     paths:
       - "libraries/typescript/**"
+      - ".github/workflows/typescript-release.yml"
   workflow_dispatch:
     inputs:
       force_publish:
@@ -43,6 +45,9 @@ jobs:
           cache-dependency-path: libraries/typescript/pnpm-lock.yaml
           registry-url: "https://registry.npmjs.org"
 
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Install Dependencies
         working-directory: libraries/typescript
         run: pnpm install --no-frozen-lockfile
@@ -51,8 +56,149 @@ jobs:
         working-directory: libraries/typescript
         run: pnpm build
 
-      - name: Check if this is a release commit
-        id: check
+      # ============================================================================
+      # CANARY BRANCH: Prerelease workflow
+      # ============================================================================
+
+      - name: Enter Prerelease Mode (Canary)
+        if: github.ref == 'refs/heads/canary'
+        run: |
+          cd libraries/typescript
+          if [ ! -f .changeset/pre.json ]; then
+            echo "Entering canary prerelease mode..."
+            pnpm changeset pre enter canary
+            cd ../..
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add libraries/typescript/.changeset/pre.json
+            git commit -m "chore: enter canary prerelease mode" || echo "No changes to commit"
+            git push
+          else
+            echo "Already in prerelease mode"
+          fi
+
+      - name: Check for changesets (Canary)
+        if: github.ref == 'refs/heads/canary'
+        working-directory: libraries/typescript
+        id: has-changesets
+        run: |
+          if [ -n "$(find .changeset -name '*.md' -not -name 'README.md' -print -quit)" ]; then
+            echo "has_changesets=true" >> $GITHUB_OUTPUT
+            echo "Found changesets to publish"
+          else
+            echo "has_changesets=false" >> $GITHUB_OUTPUT
+            echo "No changesets found"
+          fi
+
+      - name: Version packages (Canary)
+        if: github.ref == 'refs/heads/canary' && steps.has-changesets.outputs.has_changesets == 'true'
+        run: |
+          cd libraries/typescript
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          pnpm changeset version
+          cd ../..
+          git add .
+          git commit -m "chore(typescript): version packages (canary)" || echo "No changes to commit"
+          git push
+
+      - name: Publish packages (Canary)
+        if: github.ref == 'refs/heads/canary' && steps.has-changesets.outputs.has_changesets == 'true'
+        working-directory: libraries/typescript
+        run: |
+          # Using npm trusted publishing (OIDC) - no token needed
+          pnpm changeset publish
+          echo "✅ Published canary packages to npm using trusted publishing"
+
+      - name: Create deployment marker (Canary)
+        if: github.ref == 'refs/heads/canary' && steps.has-changesets.outputs.has_changesets == 'true'
+        run: |
+          echo "packages_published=true" > .railway-deploy-marker
+          echo "branch=canary" >> .railway-deploy-marker
+
+      - name: Upload deployment marker (Canary)
+        if: github.ref == 'refs/heads/canary' && steps.has-changesets.outputs.has_changesets == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-deploy-marker
+          path: .railway-deploy-marker
+          retention-days: 1
+
+      # ============================================================================
+      # MAIN BRANCH: Stable release workflow
+      # ============================================================================
+
+      - name: Check if in prerelease mode (Main)
+        if: github.ref == 'refs/heads/main'
+        working-directory: libraries/typescript
+        id: check-prerelease
+        run: |
+          if [ -f .changeset/pre.json ]; then
+            echo "in_prerelease=true" >> $GITHUB_OUTPUT
+            echo "🐤 Detected prerelease mode on main branch"
+          else
+            echo "in_prerelease=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  Not in prerelease mode"
+          fi
+
+      - name: Create exit prerelease PR (Main)
+        if: github.ref == 'refs/heads/main' && steps.check-prerelease.outputs.in_prerelease == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create new branch (from repo root)
+          BRANCH_NAME="release/exit-prerelease-$(date +%s)"
+          git checkout -b "$BRANCH_NAME"
+
+          # Exit prerelease mode
+          cd libraries/typescript
+          echo "Exiting prerelease mode..."
+          pnpm changeset pre exit
+
+          # Version packages
+          echo "Versioning packages..."
+          pnpm changeset version
+
+          # Go back to repo root for git operations
+          cd ../..
+
+          # Commit changes
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore(release): exit prerelease mode and version packages"
+
+          # Push branch
+          git push origin "$BRANCH_NAME"
+
+          # Create PR
+          gh pr create \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --title "release(typescript): Exit prerelease mode and version packages" \
+            --body "This PR exits prerelease mode and versions packages for stable release.
+
+          ## Changes:
+
+          - ✅ Exited prerelease mode (removed \`pre.json\`)
+          - ✅ Versioned packages to stable versions
+          - ✅ Updated CHANGELOGs
+
+          ## After merging:
+
+          - ✅ Packages will be automatically published to npm with \`latest\` tag
+          - ✅ Git tags will be pushed
+          - ✅ GitHub release will be created
+
+          ---
+
+          **This PR was automatically created after merging canary to main.**"
+
+          echo "✅ Created exit prerelease PR"
+
+      - name: Check if this is a release commit (Main)
+        if: github.ref == 'refs/heads/main' && steps.check-prerelease.outputs.in_prerelease == 'false'
+        id: check-release
         run: |
           COMMIT_MSG=$(git log -1 --pretty=%B)
 
@@ -64,104 +210,62 @@ jobs:
             echo "ℹ️  Not a release commit - skipping publish"
           fi
 
-      - name: Publish packages
-        if: steps.check.outputs.should_publish == 'true'
+      - name: Publish packages (Main)
+        if: github.ref == 'refs/heads/main' &&
+            steps.check-prerelease.outputs.in_prerelease == 'false' &&
+            steps.check-release.outputs.should_publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Setup npm auth
+          set -e  # Exit immediately if any command fails
+          
+          # Publish to npm using trusted publishing (OIDC) - no token needed
           cd libraries/typescript
-          echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" > .npmrc
-
-          # Publish to npm
           pnpm changeset publish
 
-          # Push git tags from repo root
+          # Capture new tags created by changeset before pushing
           cd ../..
-          git push --follow-tags
-
-          echo "✅ Published packages to npm and pushed tags"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_ORG }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        if: steps.check.outputs.should_publish == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Fetch all tags
-          git fetch --tags
-
-          # Get tags from the last commit (the publish commit creates tags)
-          TAGS=$(git tag --points-at HEAD)
-
-          if [ -z "$TAGS" ]; then
-            echo "ℹ️  No tags found on current commit"
+          NEW_TAGS=$(git tag --points-at HEAD)
+          
+          if [ -z "$NEW_TAGS" ]; then
+            echo "⚠️  No tags were created by changeset publish"
             exit 0
           fi
+          
+          echo "📦 Tags created: $NEW_TAGS"
 
-          # Get the date for the release title
-          RELEASE_DATE=$(date +"%Y-%m-%d")
-          
-          # Generate release notes combining all packages
-          RELEASE_NOTES="# TypeScript Packages Release - $RELEASE_DATE"$'\n\n'
-          RELEASE_NOTES+="## 📦 Published Packages"$'\n\n'
-          
-          # Track the first/main tag for the release name
-          MAIN_TAG=""
-          
-          # Loop through all tags to build combined release notes
-          for TAG in $TAGS; do
-            if [ -z "$MAIN_TAG" ]; then
-              MAIN_TAG="$TAG"
-            fi
-            
-            echo "Processing $TAG..."
-            
-            # Extract package name and version
-            PACKAGE_NAME=$(echo "$TAG" | sed 's/@[0-9].*//')
-            VERSION=$(echo "$TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*')
-            
-            # Add package header
-            RELEASE_NOTES+="### \`$TAG\`"$'\n\n'
-            
-            # Try to extract changelog for this version
-            CHANGELOG_FILE="libraries/typescript/packages/${PACKAGE_NAME##*\/}/CHANGELOG.md"
-            
-            if [ -f "$CHANGELOG_FILE" ]; then
-              # Extract the changelog for this specific version
-              PACKAGE_CHANGELOG=$(awk -v ver="$VERSION" '
-                /^## / {
-                  if (found) exit;
-                  if ($0 ~ ver) found=1;
-                  next;
-                }
-                found {print}
-              ' "$CHANGELOG_FILE")
-              
-              if [ -n "$PACKAGE_CHANGELOG" ]; then
-                RELEASE_NOTES+="$PACKAGE_CHANGELOG"$'\n\n'
-              else
-                RELEASE_NOTES+="_No changelog entry found for this version._"$'\n\n'
-              fi
-            else
-              RELEASE_NOTES+="_No CHANGELOG.md found._"$'\n\n'
-            fi
-            
-            RELEASE_NOTES+="---"$'\n\n'
-          done
+          # Save tags to a file for the next step
+          echo "$NEW_TAGS" > .release-tags
 
-          # Create a single consolidated release using the first tag
-          RELEASE_TITLE="TypeScript Release - $RELEASE_DATE"
-          
-          gh release create "$MAIN_TAG" \
-            --title "$RELEASE_TITLE" \
-            --notes "$RELEASE_NOTES" \
-            --latest || echo "⚠️  Failed to create release (may already exist)"
-          
-          echo "✅ Created consolidated GitHub release: $RELEASE_TITLE"
+          # Push git tags - fail immediately if this doesn't work
+          if ! git push --follow-tags; then
+            echo "❌ Failed to push tags to remote"
+            rm -f .release-tags  # Clean up tags file since push failed
+            exit 1
+          fi
+
+          echo "✅ Published packages to npm using trusted publishing and pushed tags"
+
+      - name: Create deployment marker (Main)
+        if: github.ref == 'refs/heads/main' &&
+            steps.check-prerelease.outputs.in_prerelease == 'false' &&
+            steps.check-release.outputs.should_publish == 'true'
+        run: |
+          echo "packages_published=true" > .railway-deploy-marker
+          echo "branch=main" >> .railway-deploy-marker
+
+      - name: Upload deployment marker (Main)
+        if: github.ref == 'refs/heads/main' &&
+            steps.check-prerelease.outputs.in_prerelease == 'false' &&
+            steps.check-release.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-deploy-marker
+          path: .railway-deploy-marker
+          retention-days: 1
 
       - name: Reset canary to main
-        if: steps.check.outputs.should_publish == 'true'
+        if: github.ref == 'refs/heads/main' && steps.check-prerelease.outputs.in_prerelease == 'false' && steps.check-release.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -180,3 +284,105 @@ jobs:
           git push --force origin canary
 
           echo "✅ Reset canary to main (canary workflow will auto-enter prerelease mode)"
+
+      - name: Create GitHub Release (Main)
+        if: github.ref == 'refs/heads/main' && steps.check-prerelease.outputs.in_prerelease == 'false' && steps.check-release.outputs.should_publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if tags file exists
+          if [ ! -f .release-tags ]; then
+            echo "ℹ️  No release tags file found"
+            exit 0
+          fi
+
+          # Read tags from the saved file
+          TAGS=$(cat .release-tags)
+
+          if [ -z "$TAGS" ]; then
+            echo "ℹ️  No tags found in release tags file"
+            exit 0
+          fi
+
+          echo "📦 Creating individual GitHub releases for: $TAGS"
+
+          # Loop through each tag and create individual releases
+          for TAG in $TAGS; do
+            echo ""
+            echo "Processing tag: $TAG"
+            
+            # Check if release already exists
+            if gh release view "$TAG" &>/dev/null; then
+              echo "⚠️  Release for $TAG already exists, skipping"
+              continue
+            fi
+            
+            # Extract package name and version
+            # Handle both @scope/package@version and package@version formats
+            if [[ "$TAG" == @*@* ]]; then
+              # Format: @scope/package@version
+              PACKAGE_NAME=$(echo "$TAG" | sed 's/@[0-9].*//')
+              VERSION=$(echo "$TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*')
+              PACKAGE_DIR=$(echo "$PACKAGE_NAME" | sed 's/@.*\///')
+            else
+              # Format: package@version
+              PACKAGE_NAME=$(echo "$TAG" | sed 's/@[0-9].*//')
+              VERSION=$(echo "$TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+.*')
+              PACKAGE_DIR="$PACKAGE_NAME"
+            fi
+            
+            echo "  Package: $PACKAGE_NAME"
+            echo "  Version: $VERSION"
+            echo "  Directory: $PACKAGE_DIR"
+            
+            # Find and extract changelog
+            CHANGELOG_FILE="libraries/typescript/packages/${PACKAGE_DIR}/CHANGELOG.md"
+            RELEASE_NOTES=""
+            
+            if [ -f "$CHANGELOG_FILE" ]; then
+              echo "  Found CHANGELOG at: $CHANGELOG_FILE"
+              
+              # Extract the changelog for this specific version
+              PACKAGE_CHANGELOG=$(awk -v ver="$VERSION" '
+                /^## / {
+                  if (found) exit;
+                  if ($0 ~ ver) found=1;
+                  next;
+                }
+                found {print}
+              ' "$CHANGELOG_FILE")
+              
+              if [ -n "$PACKAGE_CHANGELOG" ]; then
+                RELEASE_NOTES="$PACKAGE_CHANGELOG"
+              else
+                RELEASE_NOTES="Release $VERSION of $PACKAGE_NAME"
+                echo "  ⚠️  No changelog entry found for version $VERSION"
+              fi
+            else
+              RELEASE_NOTES="Release $VERSION of $PACKAGE_NAME"
+              echo "  ⚠️  No CHANGELOG.md found at: $CHANGELOG_FILE"
+            fi
+            
+            # Determine if this should be marked as latest
+            LATEST_FLAG=""
+            if [ "$PACKAGE_NAME" = "mcp-use" ]; then
+              LATEST_FLAG="--latest"
+              echo "  📌 Marking as latest release"
+            fi
+            
+            # Create the release
+            RELEASE_TITLE="$PACKAGE_NAME $VERSION"
+            echo "  Creating release: $RELEASE_TITLE"
+            
+            if gh release create "$TAG" \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES" \
+              $LATEST_FLAG; then
+              echo "  ✅ Created release for $TAG"
+            else
+              echo "  ❌ Failed to create release for $TAG"
+            fi
+          done
+
+          echo ""
+          echo "✅ Finished creating GitHub releases"

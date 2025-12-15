@@ -1,5 +1,4 @@
-import type { Resource } from "@modelcontextprotocol/sdk/types.js";
-import type { ResourceResult } from "./resources";
+import type { Resource } from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import {
   useCallback,
   useEffect,
@@ -8,12 +7,16 @@ import {
   useRef,
   useState,
 } from "react";
-
+import { AnimatePresence, motion } from "framer-motion";
+import { ChevronLeft, ChevronDown, Trash2 } from "lucide-react";
+import { Button } from "@/client/components/ui/button";
+import type { ResourceResult } from "./resources";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/client/components/ui/resizable";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import { useInspector } from "@/client/context/InspectorContext";
 import { MCPResourceReadEvent, Telemetry } from "@/client/telemetry";
 import {
@@ -21,6 +24,8 @@ import {
   ResourcesList,
   ResourcesTabHeader,
 } from "./resources";
+import { JsonRpcLoggerView } from "./logging/JsonRpcLoggerView";
+import { Badge } from "@/client/components/ui/badge";
 
 export interface ResourcesTabRef {
   focusSearch: () => void;
@@ -55,8 +60,34 @@ export function ResourcesTab({
   const [previewMode, setPreviewMode] = useState(true);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
+  const [isCopied, setIsCopied] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const resourceDisplayRef = useRef<HTMLDivElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  const [rpcMessageCount, setRpcMessageCount] = useState(0);
+  const [rpcPanelCollapsed, setRpcPanelCollapsed] = useState(true);
+  const rpcPanelRef = useRef<ImperativePanelHandle>(null);
+  const clearRpcMessagesRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Detect mobile screen size
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  // Handle mobile view transitions
+  useEffect(() => {
+    if (selectedResource) {
+      setMobileView("detail");
+    } else {
+      setMobileView("list");
+    }
+  }, [selectedResource]);
 
   // Expose focusSearch and blurSearch methods via ref
   useImperativeHandle(ref, () => ({
@@ -253,6 +284,8 @@ export function ResourcesTab({
       await navigator.clipboard.writeText(
         JSON.stringify(currentResult.result, null, 2)
       );
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
     } catch (error) {
       console.error("[ResourcesTab] Failed to copy result:", error);
     }
@@ -294,64 +327,237 @@ export function ResourcesTab({
     }
   }, []);
 
+  if (isMobile) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden relative bg-background">
+        {/* Breadcrumbs / Header - Only show when not on list view */}
+        {mobileView !== "list" && (
+          <div className="flex items-center gap-2 p-2 border-b shrink-0 bg-background z-10">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSelectedResource(null);
+                setMobileView("list");
+              }}
+              className="p-0 h-8 w-8"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="flex items-center text-sm font-medium">
+              <button
+                onClick={() => {
+                  setSelectedResource(null);
+                  setMobileView("list");
+                }}
+                className="text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+              >
+                Resources
+              </button>
+              {mobileView === "detail" && (
+                <>
+                  <span className="mx-2 text-muted-foreground">/</span>
+                  <span className="text-foreground">Content</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex-1 relative overflow-hidden">
+          <AnimatePresence initial={false} mode="popLayout">
+            {mobileView === "list" && (
+              <motion.div
+                key="list"
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="absolute inset-0 flex flex-col bg-background z-0"
+              >
+                <ResourcesTabHeader
+                  activeTab={activeTab}
+                  isSearchExpanded={isSearchExpanded}
+                  searchQuery={searchQuery}
+                  filteredResourcesCount={filteredResources.length}
+                  onSearchExpand={() => setIsSearchExpanded(true)}
+                  onSearchChange={setSearchQuery}
+                  onSearchBlur={handleSearchBlur}
+                  onTabSwitch={() => {}}
+                  searchInputRef={
+                    searchInputRef as React.RefObject<HTMLInputElement>
+                  }
+                />
+                <div className="flex flex-col h-full">
+                  <ResourcesList
+                    resources={filteredResources}
+                    selectedResource={selectedResource}
+                    onResourceSelect={handleResourceSelect}
+                    focusedIndex={focusedIndex}
+                  />
+                </div>
+              </motion.div>
+            )}
+
+            {mobileView === "detail" && (
+              <motion.div
+                key="detail"
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="absolute inset-0 bg-white dark:bg-zinc-900 z-10"
+              >
+                <div ref={resourceDisplayRef} className="h-full">
+                  <ResourceResultDisplay
+                    result={currentResult}
+                    isLoading={isLoading}
+                    previewMode={previewMode}
+                    serverId={serverId}
+                    readResource={readResource}
+                    onTogglePreview={() => setPreviewMode(!previewMode)}
+                    onCopy={handleCopy}
+                    onDownload={handleDownload}
+                    onFullscreen={handleFullscreen}
+                    isCopied={isCopied}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <ResizablePanelGroup direction="horizontal" className="h-full">
       <ResizablePanel defaultSize={25}>
-        <ResourcesTabHeader
-          activeTab={activeTab}
-          isSearchExpanded={isSearchExpanded}
-          searchQuery={searchQuery}
-          filteredResourcesCount={filteredResources.length}
-          onSearchExpand={() => setIsSearchExpanded(true)}
-          onSearchChange={setSearchQuery}
-          onSearchBlur={handleSearchBlur}
-          onTabSwitch={() => {}}
-          searchInputRef={searchInputRef as React.RefObject<HTMLInputElement>}
-        />
+        <ResizablePanelGroup
+          direction="vertical"
+          className="h-full border-r dark:border-zinc-700"
+        >
+          <ResizablePanel defaultSize={75} minSize={30}>
+            <div className="flex flex-col h-full overflow-hidden">
+              <ResourcesTabHeader
+                activeTab={activeTab}
+                isSearchExpanded={isSearchExpanded}
+                searchQuery={searchQuery}
+                filteredResourcesCount={filteredResources.length}
+                onSearchExpand={() => setIsSearchExpanded(true)}
+                onSearchChange={setSearchQuery}
+                onSearchBlur={handleSearchBlur}
+                onTabSwitch={() => {}}
+                searchInputRef={
+                  searchInputRef as React.RefObject<HTMLInputElement>
+                }
+              />
 
-        <div className="flex flex-col h-full">
-          <ResourcesList
-            resources={filteredResources}
-            selectedResource={selectedResource}
-            onResourceSelect={handleResourceSelect}
-            focusedIndex={focusedIndex}
-          />
-        </div>
+              <ResourcesList
+                resources={filteredResources}
+                selectedResource={selectedResource}
+                onResourceSelect={handleResourceSelect}
+                focusedIndex={focusedIndex}
+              />
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel
+            ref={rpcPanelRef}
+            defaultSize={0}
+            collapsible
+            minSize={5}
+            collapsedSize={5}
+            onCollapse={() => setRpcPanelCollapsed(true)}
+            onExpand={() => setRpcPanelCollapsed(false)}
+            className="flex flex-col border-t dark:border-zinc-700"
+          >
+            <div
+              className="group flex items-center justify-between p-3 shrink-0 cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (rpcPanelCollapsed) {
+                  rpcPanelRef.current?.resize(25);
+                  setRpcPanelCollapsed(false);
+                } else {
+                  rpcPanelRef.current?.resize(5);
+                  setRpcPanelCollapsed(true);
+                }
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium">RPC Messages</h3>
+                {rpcMessageCount > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className="bg-zinc-500/20 text-zinc-600 dark:text-zinc-400 border-transparent"
+                  >
+                    {rpcMessageCount}
+                  </Badge>
+                )}
+                {rpcMessageCount > 0 && !rpcPanelCollapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      clearRpcMessagesRef.current?.();
+                    }}
+                    className="h-6 w-6 p-0"
+                    title="Clear all messages"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </div>
+              <ChevronDown
+                className={`h-4 w-4 text-muted-foreground transition-transform ${
+                  rpcPanelCollapsed ? "" : "rotate-180"
+                }`}
+              />
+            </div>
+            {!rpcPanelCollapsed && (
+              <div className="flex-1 overflow-hidden min-h-0">
+                <JsonRpcLoggerView
+                  serverIds={[serverId]}
+                  onCountChange={setRpcMessageCount}
+                  onClearRef={clearRpcMessagesRef}
+                />
+              </div>
+            )}
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </ResizablePanel>
 
       <ResizableHandle />
 
       <ResizablePanel defaultSize={50}>
-        <div
-          ref={resourceDisplayRef}
-          className="h-full bg-white dark:bg-zinc-900"
-        >
-          <ResourceResultDisplay
-            result={currentResult}
-            isLoading={isLoading}
-            previewMode={previewMode}
-            serverId={serverId}
-            readResource={readResource}
-            onTogglePreview={() => setPreviewMode(!previewMode)}
-            onCopy={handleCopy}
-            onDownload={handleDownload}
-            onFullscreen={handleFullscreen}
-          />
-        </div>
+        <ResizablePanelGroup direction="vertical">
+          <ResizablePanel defaultSize={70}>
+            <div
+              ref={resourceDisplayRef}
+              className="h-full bg-white dark:bg-zinc-900"
+            >
+              <ResourceResultDisplay
+                result={currentResult}
+                isLoading={isLoading}
+                previewMode={previewMode}
+                serverId={serverId}
+                readResource={readResource}
+                onTogglePreview={() => setPreviewMode(!previewMode)}
+                onCopy={handleCopy}
+                onDownload={handleDownload}
+                onFullscreen={handleFullscreen}
+                isCopied={isCopied}
+              />
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </ResizablePanel>
-
-      {/* <ResizableHandle />
-
-      <ResizablePanel defaultSize={25}>
-        <div className="h-full bg-white dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-700">
-          <div className="px-3 py-2 border-b border-zinc-200 dark:border-zinc-700 text-xs text-zinc-500 font-medium">
-            UI Events
-          </div>
-          <div className="max-h-full overflow-auto p-3 text-xs">
-            <div className="text-zinc-500">No events yet</div>
-          </div>
-        </div>
-      </ResizablePanel> */}
     </ResizablePanelGroup>
   );
 }

@@ -1,5 +1,4 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { SavedRequest, ToolResult } from "./tools";
+import type { Tool } from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import {
   useCallback,
   useEffect,
@@ -8,12 +7,17 @@ import {
   useRef,
   useState,
 } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ChevronLeft, ChevronDown, Trash2 } from "lucide-react";
+import { Button } from "@/client/components/ui/button";
+import type { SavedRequest, ToolResult } from "./tools";
 
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/client/components/ui/resizable";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import { useInspector } from "@/client/context/InspectorContext";
 import {
   MCPToolExecutionEvent,
@@ -28,6 +32,8 @@ import {
   ToolsList,
   ToolsTabHeader,
 } from "./tools";
+import { JsonRpcLoggerView } from "./logging/JsonRpcLoggerView";
+import { Badge } from "@/client/components/ui/badge";
 
 export interface ToolsTabRef {
   focusSearch: () => void;
@@ -36,7 +42,16 @@ export interface ToolsTabRef {
 
 interface ToolsTabProps {
   tools: Tool[];
-  callTool: (name: string, args?: Record<string, unknown>) => Promise<any>;
+  callTool: (
+    name: string,
+    args?: Record<string, unknown>,
+    options?: {
+      timeout?: number;
+      maxTotalTimeout?: number;
+      resetTimeoutOnProgress?: boolean;
+      signal?: AbortSignal;
+    }
+  ) => Promise<any>;
   readResource: (uri: string) => Promise<any>;
   serverId: string;
   isConnected: boolean;
@@ -61,6 +76,8 @@ export function ToolsTab({
   const [results, setResults] = useState<ToolResult[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
   const [copiedResult, setCopiedResult] = useState<number | null>(null);
+  const [abortController, setAbortController] =
+    useState<AbortController | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"tools" | "saved">("tools");
   const [savedRequests, setSavedRequests] = useState<SavedRequest[]>([]);
@@ -70,6 +87,49 @@ export function ToolsTab({
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobileView, setMobileView] = useState<"list" | "detail" | "response">(
+    "list"
+  );
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [rpcMessageCount, setRpcMessageCount] = useState(0);
+  const [rpcPanelCollapsed, setRpcPanelCollapsed] = useState(true);
+  const [_rpcPanelSize, _setRpcPanelSize] = useState<number | undefined>(
+    undefined
+  );
+
+  // Refs for resizable panels
+  const leftPanelRef = useRef<any>(null);
+  const topPanelRef = useRef<any>(null);
+  const bottomPanelRef = useRef<any>(null);
+  const rpcPanelRef = useRef<ImperativePanelHandle>(null);
+  const clearRpcMessagesRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Detect mobile screen size
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  // Handle mobile view transitions
+  useEffect(() => {
+    if (selectedTool) {
+      setMobileView("detail");
+    } else {
+      setMobileView("list");
+    }
+  }, [selectedTool]);
+
+  // Switch to response view when execution finishes (if on mobile)
+  useEffect(() => {
+    if (isMobile && results.length > 0 && !isExecuting) {
+      setMobileView("response");
+    }
+  }, [results, isExecuting, isMobile]);
 
   // Expose focusSearch and blurSearch methods via ref
   useImperativeHandle(ref, () => ({
@@ -140,9 +200,11 @@ export function ToolsTab({
         } else if (typedProp.type === "boolean") {
           initialArgs[key] = false;
         } else if (typedProp.type === "array") {
-          initialArgs[key] = [];
+          // Initialize as empty JSON string to preserve formatting
+          initialArgs[key] = "[]";
         } else if (typedProp.type === "object") {
-          initialArgs[key] = {};
+          // Initialize as empty JSON string to preserve formatting
+          initialArgs[key] = "{}";
         }
       });
     }
@@ -292,9 +354,13 @@ export function ToolsTab({
           const prop = selectedTool.inputSchema.properties[key] as any;
           const expectedType = prop.type;
 
-          if (expectedType === "string") {
+          // Keep object/array types as strings to preserve formatting and cursor position
+          if (expectedType === "object" || expectedType === "array") {
+            newArgs[key] = value;
+          } else if (expectedType === "string") {
             newArgs[key] = value;
           } else {
+            // For other types (number, boolean, etc.), try to parse
             try {
               newArgs[key] = JSON.parse(value);
             } catch {
@@ -302,11 +368,8 @@ export function ToolsTab({
             }
           }
         } else {
-          try {
-            newArgs[key] = JSON.parse(value);
-          } catch {
-            newArgs[key] = value;
-          }
+          // If no schema info, keep as string to be safe
+          newArgs[key] = value;
         }
 
         return newArgs;
@@ -318,11 +381,45 @@ export function ToolsTab({
   const executeTool = useCallback(async () => {
     if (!selectedTool || isExecuting) return;
 
+    // Create abort controller for this execution
+    const controller = new AbortController();
+    setAbortController(controller);
     setIsExecuting(true);
     const startTime = Date.now();
 
     try {
-      const result = await callTool(selectedTool.name, toolArgs);
+      // Parse JSON strings for object/array types before execution
+      const parsedArgs = { ...toolArgs };
+      if (selectedTool.inputSchema?.properties) {
+        Object.entries(selectedTool.inputSchema.properties).forEach(
+          ([key, prop]) => {
+            const typedProp = prop as any;
+            const expectedType = typedProp.type;
+            const value = parsedArgs[key];
+
+            // Parse JSON strings for object/array types
+            if (
+              (expectedType === "object" || expectedType === "array") &&
+              typeof value === "string"
+            ) {
+              try {
+                parsedArgs[key] = JSON.parse(value);
+              } catch {
+                // If parsing fails, keep the string value
+                // The tool execution will handle the error
+              }
+            }
+          }
+        );
+      }
+
+      // Use a 10 minute timeout for tool calls, as tools may trigger sampling/elicitation
+      // which can take a long time (waiting for LLM responses or human input)
+      const result = await callTool(selectedTool.name, parsedArgs, {
+        timeout: 600000, // 10 minutes
+        resetTimeoutOnProgress: true, // Reset timeout when progress is received
+        signal: controller.signal, // Pass abort signal
+      });
       const duration = Date.now() - startTime;
 
       // Track successful tool execution
@@ -491,9 +588,15 @@ export function ToolsTab({
     setResults((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  // Filter results to only show executions of the currently selected tool
+  const filteredResults = useMemo(() => {
+    if (!selectedTool) return [];
+    return results.filter((r) => r.toolName === selectedTool.name);
+  }, [results, selectedTool]);
+
   const handleFullscreen = useCallback(
     (index: number) => {
-      const result = results[index];
+      const result = filteredResults[index];
       if (result) {
         const newWindow = window.open("", "_blank", "width=800,height=600");
         if (newWindow) {
@@ -518,6 +621,28 @@ export function ToolsTab({
     },
     [results]
   );
+
+  const handleMaximize = useCallback(() => {
+    if (!isMaximized) {
+      // Maximize: collapse left panel and top panel
+      if (leftPanelRef.current) {
+        leftPanelRef.current.collapse();
+      }
+      if (topPanelRef.current) {
+        topPanelRef.current.collapse();
+      }
+      setIsMaximized(true);
+    } else {
+      // Restore: expand left panel and top panel
+      if (leftPanelRef.current) {
+        leftPanelRef.current.expand();
+      }
+      if (topPanelRef.current) {
+        topPanelRef.current.expand();
+      }
+      setIsMaximized(false);
+    }
+  }, [isMaximized]);
 
   const openSaveDialog = useCallback(() => {
     if (!selectedTool) return;
@@ -577,50 +702,302 @@ export function ToolsTab({
     [savedRequests, saveSavedRequests, selectedSavedRequest]
   );
 
+  if (isMobile) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden relative bg-background">
+        {/* Breadcrumbs / Header - Only show when not on list view */}
+        {mobileView !== "list" && (
+          <div className="flex items-center gap-2 p-2 border-b shrink-0 bg-background z-10">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                if (mobileView === "response") {
+                  setMobileView("detail");
+                } else {
+                  setSelectedTool(null);
+                  setMobileView("list");
+                }
+              }}
+              className="p-0 h-8 w-8"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="flex items-center text-sm font-medium">
+              <button
+                onClick={() => {
+                  setSelectedTool(null);
+                  setMobileView("list");
+                }}
+                className="text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+              >
+                Tools
+              </button>
+              {mobileView === "detail" && (
+                <>
+                  <span className="mx-2 text-muted-foreground">/</span>
+                  <button
+                    onClick={() => {
+                      setMobileView("response");
+                    }}
+                    className={
+                      mobileView === "detail"
+                        ? "text-foreground hover:underline"
+                        : mobileView === "response"
+                          ? "text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+                          : "text-muted-foreground"
+                    }
+                  >
+                    Execute
+                  </button>
+                </>
+              )}
+              {mobileView === "response" && (
+                <>
+                  <span className="mx-2 text-muted-foreground">/</span>
+                  <span className="text-foreground">Response</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex-1 relative overflow-hidden">
+          <AnimatePresence initial={false} mode="popLayout">
+            {mobileView === "list" && (
+              <motion.div
+                key="list"
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="absolute inset-0 flex flex-col bg-background z-0"
+              >
+                <ToolsTabHeader
+                  activeTab={activeTab}
+                  isSearchExpanded={isSearchExpanded}
+                  searchQuery={searchQuery}
+                  filteredToolsCount={filteredTools.length}
+                  savedRequestsCount={savedRequests.length}
+                  onSearchExpand={() => setIsSearchExpanded(true)}
+                  onSearchChange={setSearchQuery}
+                  onSearchBlur={handleSearchBlur}
+                  onTabSwitch={() =>
+                    setActiveTab(activeTab === "tools" ? "saved" : "tools")
+                  }
+                  searchInputRef={
+                    searchInputRef as React.RefObject<HTMLInputElement>
+                  }
+                />
+                {activeTab === "tools" ? (
+                  <ToolsList
+                    tools={filteredTools}
+                    selectedTool={selectedTool}
+                    onToolSelect={handleToolSelect}
+                    focusedIndex={focusedIndex}
+                  />
+                ) : (
+                  <SavedRequestsList
+                    savedRequests={savedRequests}
+                    selectedRequest={selectedSavedRequest}
+                    onLoadRequest={loadSavedRequest}
+                    onDeleteRequest={deleteSavedRequest}
+                    focusedIndex={focusedIndex}
+                  />
+                )}
+              </motion.div>
+            )}
+
+            {mobileView === "detail" && (
+              <motion.div
+                key="detail"
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="absolute inset-0 bg-background z-10"
+              >
+                <ToolExecutionPanel
+                  selectedTool={selectedTool}
+                  toolArgs={toolArgs}
+                  isExecuting={isExecuting}
+                  isConnected={isConnected}
+                  onArgChange={handleArgChange}
+                  onExecute={executeTool}
+                  onSave={openSaveDialog}
+                />
+              </motion.div>
+            )}
+
+            {mobileView === "response" && (
+              <motion.div
+                key="response"
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="absolute inset-0 bg-background z-20"
+              >
+                <ToolResultDisplay
+                  results={filteredResults}
+                  copiedResult={copiedResult}
+                  previewMode={previewMode}
+                  serverId={serverId}
+                  readResource={readResource}
+                  onCopy={handleCopyResult}
+                  onDelete={handleDeleteResult}
+                  onFullscreen={handleFullscreen}
+                  onTogglePreview={() => setPreviewMode(!previewMode)}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <SaveRequestDialog
+          isOpen={saveDialogOpen}
+          requestName={requestName}
+          defaultPlaceholder={`${selectedTool?.name} - ${new Date().toLocaleString()}`}
+          onRequestNameChange={setRequestName}
+          onSave={saveRequest}
+          onCancel={() => setSaveDialogOpen(false)}
+        />
+      </div>
+    );
+  }
+
   return (
     <ResizablePanelGroup direction="horizontal" className="h-full">
       <ResizablePanel
+        ref={leftPanelRef}
         defaultSize={33}
+        collapsible
         className="flex flex-col h-full relative"
       >
-        <ToolsTabHeader
-          activeTab={activeTab}
-          isSearchExpanded={isSearchExpanded}
-          searchQuery={searchQuery}
-          filteredToolsCount={filteredTools.length}
-          savedRequestsCount={savedRequests.length}
-          onSearchExpand={() => setIsSearchExpanded(true)}
-          onSearchChange={setSearchQuery}
-          onSearchBlur={handleSearchBlur}
-          onTabSwitch={() =>
-            setActiveTab(activeTab === "tools" ? "saved" : "tools")
-          }
-          searchInputRef={searchInputRef as React.RefObject<HTMLInputElement>}
-        />
+        <ResizablePanelGroup
+          direction="vertical"
+          className="h-full border-r dark:border-zinc-700"
+        >
+          <ResizablePanel defaultSize={75} minSize={30}>
+            <div className="flex flex-col h-full overflow-hidden">
+              <ToolsTabHeader
+                activeTab={activeTab}
+                isSearchExpanded={isSearchExpanded}
+                searchQuery={searchQuery}
+                filteredToolsCount={filteredTools.length}
+                savedRequestsCount={savedRequests.length}
+                onSearchExpand={() => setIsSearchExpanded(true)}
+                onSearchChange={setSearchQuery}
+                onSearchBlur={handleSearchBlur}
+                onTabSwitch={() =>
+                  setActiveTab(activeTab === "tools" ? "saved" : "tools")
+                }
+                searchInputRef={
+                  searchInputRef as React.RefObject<HTMLInputElement>
+                }
+              />
 
-        {activeTab === "tools" ? (
-          <ToolsList
-            tools={filteredTools}
-            selectedTool={selectedTool}
-            onToolSelect={handleToolSelect}
-            focusedIndex={focusedIndex}
-          />
-        ) : (
-          <SavedRequestsList
-            savedRequests={savedRequests}
-            selectedRequest={selectedSavedRequest}
-            onLoadRequest={loadSavedRequest}
-            onDeleteRequest={deleteSavedRequest}
-            focusedIndex={focusedIndex}
-          />
-        )}
+              {activeTab === "tools" ? (
+                <ToolsList
+                  tools={filteredTools}
+                  selectedTool={selectedTool}
+                  onToolSelect={handleToolSelect}
+                  focusedIndex={focusedIndex}
+                />
+              ) : (
+                <SavedRequestsList
+                  savedRequests={savedRequests}
+                  selectedRequest={selectedSavedRequest}
+                  onLoadRequest={loadSavedRequest}
+                  onDeleteRequest={deleteSavedRequest}
+                  focusedIndex={focusedIndex}
+                />
+              )}
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel
+            ref={rpcPanelRef}
+            defaultSize={0}
+            collapsible
+            minSize={5}
+            collapsedSize={5}
+            onCollapse={() => {
+              setRpcPanelCollapsed(true);
+            }}
+            onExpand={() => {
+              setRpcPanelCollapsed(false);
+            }}
+            className="flex flex-col border-t dark:border-zinc-700"
+          >
+            <div
+              className="group flex items-center justify-between p-3 shrink-0 cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (rpcPanelCollapsed) {
+                  // Expand to 25% of parent height
+                  rpcPanelRef.current?.resize(25);
+                  setRpcPanelCollapsed(false);
+                } else {
+                  // Collapse to minimum size
+                  rpcPanelRef.current?.resize(5);
+                  setRpcPanelCollapsed(true);
+                }
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium">RPC Messages</h3>
+                {rpcMessageCount > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className="bg-zinc-500/20 text-zinc-600 dark:text-zinc-400 border-transparent"
+                  >
+                    {rpcMessageCount}
+                  </Badge>
+                )}
+                {rpcMessageCount > 0 && !rpcPanelCollapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      clearRpcMessagesRef.current?.();
+                    }}
+                    className="h-6 w-6 p-0"
+                    title="Clear all messages"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </div>
+              <ChevronDown
+                className={`h-4 w-4 text-muted-foreground transition-transform ${
+                  rpcPanelCollapsed ? "" : "rotate-180"
+                }`}
+              />
+            </div>
+            {!rpcPanelCollapsed && (
+              <div className="flex-1 overflow-hidden min-h-0">
+                <JsonRpcLoggerView
+                  serverIds={[serverId]}
+                  onCountChange={setRpcMessageCount}
+                  onClearRef={clearRpcMessagesRef}
+                />
+              </div>
+            )}
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </ResizablePanel>
 
       <ResizableHandle withHandle />
 
       <ResizablePanel defaultSize={67}>
         <ResizablePanelGroup direction="vertical">
-          <ResizablePanel defaultSize={40}>
+          <ResizablePanel ref={topPanelRef} defaultSize={40} collapsible>
             <ToolExecutionPanel
               selectedTool={selectedTool}
               toolArgs={toolArgs}
@@ -629,15 +1006,20 @@ export function ToolsTab({
               onArgChange={handleArgChange}
               onExecute={executeTool}
               onSave={openSaveDialog}
+              onCancel={() => {
+                if (abortController) {
+                  abortController.abort();
+                }
+              }}
             />
           </ResizablePanel>
 
           <ResizableHandle withHandle />
 
-          <ResizablePanel defaultSize={60}>
+          <ResizablePanel ref={bottomPanelRef} defaultSize={60}>
             <div className="flex flex-col h-full">
               <ToolResultDisplay
-                results={results}
+                results={filteredResults}
                 copiedResult={copiedResult}
                 previewMode={previewMode}
                 serverId={serverId}
@@ -646,6 +1028,8 @@ export function ToolsTab({
                 onDelete={handleDeleteResult}
                 onFullscreen={handleFullscreen}
                 onTogglePreview={() => setPreviewMode(!previewMode)}
+                onMaximize={handleMaximize}
+                isMaximized={isMaximized}
               />
             </div>
           </ResizablePanel>

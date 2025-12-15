@@ -14,12 +14,20 @@ import { RemoteAgent } from "./src/agents/remote.js";
 import { MCPClient } from "./src/client.js";
 import { loadConfigFile } from "./src/config.js";
 import { BaseConnector } from "./src/connectors/base.js";
+import type { NotificationHandler } from "./src/connectors/base.js";
 import { HttpConnector } from "./src/connectors/http.js";
 import { StdioConnector } from "./src/connectors/stdio.js";
 import { WebSocketConnector } from "./src/connectors/websocket.js";
 
 import { Logger, logger } from "./src/logging.js";
-import { MCPSession } from "./src/session.js";
+import {
+  MCPSession,
+  type CallToolResult,
+  type Notification,
+  type Root,
+  type Tool,
+} from "./src/session.js";
+import type { CreateMessageRequest } from "@mcp-use/modelcontextprotocol-sdk/types.js";
 
 export { BaseAdapter, LangChainAdapter } from "./src/adapters/index.js";
 // Export AI SDK utilities
@@ -30,23 +38,26 @@ export * from "./src/managers/tools/index.js";
 
 // Export observability utilities
 export {
-  type ObservabilityConfig,
   ObservabilityManager,
+  type ObservabilityConfig,
 } from "./src/observability/index.js";
 
 // Export telemetry utilities
 export { setTelemetrySource, Telemetry } from "./src/telemetry/index.js";
 
+// Export version information (global)
+export { getPackageVersion, VERSION } from "./src/version.js";
+
 // Export OAuth helper (legacy - for backward compatibility)
 export {
-  OAuthHelper,
-  LINEAR_OAUTH_CONFIG,
   createOAuthMCPConfig,
+  LINEAR_OAUTH_CONFIG,
+  OAuthHelper,
 } from "./src/oauth-helper.js";
 export type {
+  ClientRegistration,
   OAuthConfig,
   OAuthDiscovery,
-  ClientRegistration,
   OAuthResult,
   OAuthState,
 } from "./src/oauth-helper.js";
@@ -60,6 +71,9 @@ export type { StoredState } from "./src/auth/types.js";
 
 // Export React hooks
 export * from "./src/react/index.js";
+
+// Export client prompts
+export { PROMPTS } from "./src/agents/index.js";
 
 // !!! NEVER EXPORT @langchain/core types it causes OOM errors when building the package
 // Note: Message classes (AIMessage, BaseMessage, etc.) are not re-exported to avoid
@@ -80,3 +94,51 @@ export {
   StdioConnector,
   WebSocketConnector,
 };
+
+// Export session-related types
+export type { CallToolResult, Notification, Root, Tool };
+
+// Export notification types for handling server notifications
+export type { NotificationHandler };
+
+// Export code execution types and classes
+export type {
+  CodeModeConfig,
+  E2BExecutorOptions,
+  ExecutorOptions,
+  MCPClientOptions,
+  VMExecutorOptions,
+} from "./src/client.js";
+
+export {
+  BaseCodeExecutor,
+  E2BCodeExecutor,
+  VMCodeExecutor,
+  isVMAvailable,
+} from "./src/client.js";
+
+export type {
+  ExecutionResult,
+  SearchToolsFunction,
+  ToolNamespaceInfo,
+  ToolSearchResult,
+} from "./src/client/codeExecutor.js";
+
+// Export custom error types
+export {
+  ElicitationDeclinedError,
+  ElicitationTimeoutError,
+  ElicitationValidationError,
+} from "./src/errors.js";
+
+// Export sampling types for LLM sampling capabilities
+export type {
+  CreateMessageRequest,
+  CreateMessageResult,
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
+
+/**
+ * Type alias for the params property of CreateMessageRequest.
+ * Convenience type for sampling callback functions.
+ */
+export type CreateMessageRequestParams = CreateMessageRequest["params"];

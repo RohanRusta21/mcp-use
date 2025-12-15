@@ -1,1262 +1,918 @@
-import type {
-  PromptDefinition,
-  ResourceDefinition,
-  ResourceTemplateDefinition,
-  ServerConfig,
-  ToolDefinition,
-  UIResourceDefinition,
-  WidgetProps,
-  InputDefinition,
-  UIResourceContent,
-} from "./types/index.js";
 import {
   McpServer as OfficialMcpServer,
   ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import express, { type Express } from "express";
-import cors from "cors";
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
-import { requestLogger } from "./logging.js";
+} from "@mcp-use/modelcontextprotocol-sdk/server/mcp.js";
+import type {
+  CreateMessageRequest,
+  CreateMessageResult,
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import {
-  createUIResourceFromDefinition,
-  type UrlConfig,
-} from "./adapters/mcp-ui-adapter.js";
-import type { GetPromptResult } from "@modelcontextprotocol/sdk/types.js";
-import { createServer } from "vite";
-import type { WidgetMetadata } from "./types/widget.js";
+  McpError,
+  ErrorCode,
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
+import type { Hono as HonoType } from "hono";
+import { z } from "zod";
+import { Telemetry } from "../telemetry/index.js";
+import { getPackageVersion } from "../version.js";
 
-const TMP_MCP_USE_DIR = ".mcp-use";
+import { uiResourceRegistration, mountWidgets } from "./widgets/index.js";
+import { mountInspectorUI } from "./inspector/index.js";
+import {
+  toolRegistration,
+  convertZodSchemaToParams,
+  createParamsSchema,
+} from "./tools/index.js";
+import {
+  registerResource,
+  registerResourceTemplate,
+  ResourceSubscriptionManager,
+} from "./resources/index.js";
+import { registerPrompt } from "./prompts/index.js";
 
-export class McpServer {
-  private server: OfficialMcpServer;
-  private config: ServerConfig;
-  private app: Express;
-  private mcpMounted = false;
-  private inspectorMounted = false;
-  private serverPort?: number;
-  private serverHost: string;
-  private serverBaseUrl?: string;
+// Import and re-export tool context types for public API
+import type {
+  ToolContext,
+  SampleOptions,
+  ElicitOptions,
+  ElicitFormParams,
+  ElicitUrlParams,
+} from "./types/tool-context.js";
+
+export type {
+  ToolContext,
+  SampleOptions,
+  ElicitOptions,
+  ElicitFormParams,
+  ElicitUrlParams,
+};
+
+import { onRootsChanged, listRoots } from "./roots/index.js";
+import { requestLogger } from "./logging.js";
+import type { SessionData } from "./sessions/index.js";
+import {
+  getActiveSessions,
+  sendNotification,
+  sendNotificationToSession,
+} from "./notifications/index.js";
+import {
+  findSessionContext,
+  createEnhancedContext,
+  isValidLogLevel,
+} from "./tools/tool-execution-helpers.js";
+import { getRequestContext, runWithContext } from "./context-storage.js";
+import { mountMcp as mountMcpHelper } from "./endpoints/index.js";
+import type { ServerConfig } from "./types/index.js";
+import {
+  getEnv,
+  getServerBaseUrl as getServerBaseUrlHelper,
+  logRegisteredItems as logRegisteredItemsHelper,
+  startServer,
+  rewriteSupabaseRequest,
+  getDenoCorsHeaders,
+  applyDenoCorsHeaders,
+  createHonoApp,
+  createHonoProxy,
+  isProductionMode as isProductionModeHelper,
+  parseTemplateUri as parseTemplateUriHelper,
+  isDeno,
+} from "./utils/index.js";
+import { setupOAuthForServer } from "./oauth/setup.js";
+import type { OAuthProvider } from "./oauth/providers/types.js";
+import type {
+  ToolDefinition,
+  ToolCallback,
+  InferToolInput,
+  InferToolOutput,
+} from "./types/tool.js";
+import type { PromptDefinition, PromptCallback } from "./types/prompt.js";
+import type {
+  ResourceDefinition,
+  ResourceTemplateDefinition,
+  ReadResourceCallback,
+  ReadResourceTemplateCallback,
+} from "./types/resource.js";
+
+class MCPServerClass<HasOAuth extends boolean = false> {
+  /**
+   * Get the mcp-use package version.
+   * Works in all environments (Node.js, browser, Cloudflare Workers, Deno, etc.)
+   */
+  public static getPackageVersion(): string {
+    return getPackageVersion();
+  }
 
   /**
-   * Creates a new MCP server instance with Express integration
+   * Native MCP server instance from @modelcontextprotocol/sdk
+   * Exposed publicly for advanced use cases
+   */
+  public readonly nativeServer: OfficialMcpServer;
+
+  /** @deprecated Use nativeServer instead - kept for backward compatibility */
+  public get server(): OfficialMcpServer {
+    return this.nativeServer;
+  }
+
+  public config: ServerConfig;
+  public app: HonoType;
+  private mcpMounted = false;
+  private inspectorMounted = false;
+  public serverPort?: number;
+  public serverHost: string;
+  public serverBaseUrl?: string;
+  public registeredTools: string[] = [];
+  public registeredPrompts: string[] = [];
+  public registeredResources: string[] = [];
+  public buildId?: string;
+  public sessions = new Map<string, SessionData>();
+  private idleCleanupInterval?: NodeJS.Timeout;
+  private oauthSetupState = {
+    complete: false,
+    provider: undefined as OAuthProvider | undefined,
+    middleware: undefined as
+      | ((c: any, next: any) => Promise<Response | void>)
+      | undefined,
+  };
+  public oauthProvider?: OAuthProvider;
+  private oauthMiddleware?: (c: any, next: any) => Promise<Response | void>;
+
+  /**
+   * Storage for registrations that can be replayed on new server instances
+   * Following the official SDK pattern where each session gets its own server instance
+   * @internal Exposed for telemetry purposes
+   */
+  public registrations = {
+    tools: new Map<string, { config: ToolDefinition; handler: ToolCallback }>(),
+    prompts: new Map<
+      string,
+      { config: PromptDefinition; handler: PromptCallback }
+    >(),
+    resources: new Map<
+      string,
+      { config: ResourceDefinition; handler: ReadResourceCallback }
+    >(),
+    resourceTemplates: new Map<
+      string,
+      {
+        config: ResourceTemplateDefinition;
+        handler: ReadResourceTemplateCallback;
+      }
+    >(),
+  };
+
+  /**
+   * Storage for widget definitions, used to inject metadata into tool responses
+   * when using the widget() helper with returnsWidget option
+   */
+  public widgetDefinitions = new Map<string, Record<string, unknown>>();
+
+  /**
+   * Resource subscription manager for tracking and notifying resource updates
+   */
+  private subscriptionManager = new ResourceSubscriptionManager();
+
+  /**
+   * Clean up resource subscriptions for a closed session
+   *
+   * This method is called automatically when a session is closed to remove
+   * all resource subscriptions associated with that session.
+   *
+   * @param sessionId - The session ID to clean up
+   * @internal
+   */
+  public cleanupSessionSubscriptions(sessionId: string): void {
+    this.subscriptionManager.cleanupSession(sessionId);
+  }
+
+  /**
+   * Creates a new MCP server instance with Hono integration
    *
    * Initializes the server with the provided configuration, sets up CORS headers,
    * configures widget serving routes, and creates a proxy that allows direct
-   * access to Express methods while preserving MCP server functionality.
+   * access to Hono methods while preserving MCP server functionality.
    *
    * @param config - Server configuration including name, version, and description
-   * @returns A proxied McpServer instance that supports both MCP and Express methods
+   * @returns A proxied MCPServer instance that supports both MCP and Hono methods
    */
   constructor(config: ServerConfig) {
     this.config = config;
+
+    // Auto-detect stateless mode: Deno = stateless, Node.js = stateful
+    if (this.config.stateless === undefined) {
+      this.config.stateless = isDeno;
+      if (this.config.stateless) {
+        console.log("[MCP] Deno detected - using stateless mode (no sessions)");
+      }
+    }
+
     this.serverHost = config.host || "localhost";
     this.serverBaseUrl = config.baseUrl;
-    this.server = new OfficialMcpServer({
-      name: config.name,
-      version: config.version,
-    });
-    this.app = express();
 
-    // Parse JSON bodies
-    this.app.use(express.json());
-
-    // Enable CORS by default
-    this.app.use(
-      cors({
-        origin: "*",
-        methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
-        allowedHeaders: [
-          "Content-Type",
-          "Accept",
-          "Authorization",
-          "mcp-protocol-version",
-          "mcp-session-id",
-          "X-Proxy-Token",
-          "X-Target-URL",
-        ],
-      })
-    );
-
-    // Request logging middleware
-    this.app.use(requestLogger);
-
-    // Proxy all Express methods to the underlying app
-    return new Proxy(this, {
-      get(target, prop) {
-        if (prop in target) {
-          return (target as any)[prop];
-        }
-        const value = (target.app as any)[prop];
-        return typeof value === "function" ? value.bind(target.app) : value;
-      },
-    }) as McpServer;
-  }
-
-  /**
-   * Define a static resource that can be accessed by clients
-   *
-   * Registers a resource with the MCP server that clients can access via HTTP.
-   * Resources are static content like files, data, or pre-computed results that
-   * can be retrieved by clients without requiring parameters.
-   *
-   * @param resourceDefinition - Configuration object containing resource metadata and handler function
-   * @param resourceDefinition.name - Unique identifier for the resource
-   * @param resourceDefinition.uri - URI pattern for accessing the resource
-   * @param resourceDefinition.title - Optional human-readable title for the resource
-   * @param resourceDefinition.description - Optional description of the resource
-   * @param resourceDefinition.mimeType - MIME type of the resource content
-   * @param resourceDefinition.annotations - Optional annotations (audience, priority, lastModified)
-   * @param resourceDefinition.readCallback - Async callback function that returns the resource content
-   * @returns The server instance for method chaining
-   *
-   * @example
-   * ```typescript
-   * server.resource({
-   *   name: 'config',
-   *   uri: 'config://app-settings',
-   *   title: 'Application Settings',
-   *   mimeType: 'application/json',
-   *   description: 'Current application configuration',
-   *   annotations: {
-   *     audience: ['user'],
-   *     priority: 0.8
-   *   },
-   *   readCallback: async () => ({
-   *     contents: [{
-   *       uri: 'config://app-settings',
-   *       mimeType: 'application/json',
-   *       text: JSON.stringify({ theme: 'dark', language: 'en' })
-   *     }]
-   *   })
-   * })
-   * ```
-   */
-  resource(resourceDefinition: ResourceDefinition): this {
-    this.server.registerResource(
-      resourceDefinition.name,
-      resourceDefinition.uri,
+    // Create native SDK server instance with capabilities
+    this.nativeServer = new OfficialMcpServer(
       {
-        name: resourceDefinition.name,
-        title: resourceDefinition.title,
-        description: resourceDefinition.description,
-        mimeType: resourceDefinition.mimeType,
-        annotations: resourceDefinition.annotations,
-        _meta: resourceDefinition._meta,
+        name: config.name,
+        version: config.version,
       },
-      async () => {
-        return await resourceDefinition.readCallback();
-      }
-    );
-    return this;
-  }
-
-  /**
-   * Define a dynamic resource template with parameters
-   *
-   * Registers a parameterized resource template with the MCP server. Templates use URI
-   * patterns with placeholders that can be filled in at request time, allowing dynamic
-   * resource generation based on parameters.
-   *
-   * @param resourceTemplateDefinition - Configuration object for the resource template
-   * @param resourceTemplateDefinition.name - Unique identifier for the template
-   * @param resourceTemplateDefinition.resourceTemplate - ResourceTemplate object with uriTemplate and metadata
-   * @param resourceTemplateDefinition.readCallback - Async callback function that generates resource content from URI and params
-   * @returns The server instance for method chaining
-   *
-   * @example
-   * ```typescript
-   * server.resourceTemplate({
-   *   name: 'user-profile',
-   *   resourceTemplate: {
-   *     uriTemplate: 'user://{userId}/profile',
-   *     name: 'User Profile',
-   *     mimeType: 'application/json'
-   *   },
-   *   readCallback: async (uri, params) => ({
-   *     contents: [{
-   *       uri: uri.toString(),
-   *       mimeType: 'application/json',
-   *       text: JSON.stringify({ userId: params.userId, name: 'John Doe' })
-   *     }]
-   *   })
-   * })
-   * ```
-   */
-  resourceTemplate(
-    resourceTemplateDefinition: ResourceTemplateDefinition
-  ): this {
-    // Create ResourceTemplate instance from SDK
-    const template = new ResourceTemplate(
-      resourceTemplateDefinition.resourceTemplate.uriTemplate,
       {
-        list: undefined, // Optional: callback to list all matching resources
-        complete: undefined, // Optional: callback for auto-completion
-      }
-    );
-
-    // Create metadata object with optional fields
-    const metadata: any = {};
-    if (resourceTemplateDefinition.resourceTemplate.name) {
-      metadata.name = resourceTemplateDefinition.resourceTemplate.name;
-    }
-    if (resourceTemplateDefinition.title) {
-      metadata.title = resourceTemplateDefinition.title;
-    }
-    if (
-      resourceTemplateDefinition.description ||
-      resourceTemplateDefinition.resourceTemplate.description
-    ) {
-      metadata.description =
-        resourceTemplateDefinition.description ||
-        resourceTemplateDefinition.resourceTemplate.description;
-    }
-    if (resourceTemplateDefinition.resourceTemplate.mimeType) {
-      metadata.mimeType = resourceTemplateDefinition.resourceTemplate.mimeType;
-    }
-    if (resourceTemplateDefinition.annotations) {
-      metadata.annotations = resourceTemplateDefinition.annotations;
-    }
-
-    this.server.registerResource(
-      resourceTemplateDefinition.name,
-      template,
-      metadata,
-      async (uri: URL) => {
-        // Parse URI parameters from the template
-        const params = this.parseTemplateUri(
-          resourceTemplateDefinition.resourceTemplate.uriTemplate,
-          uri.toString()
-        );
-        return await resourceTemplateDefinition.readCallback(uri, params);
-      }
-    );
-    return this;
-  }
-
-  /**
-   * Define a tool that can be called by clients
-   *
-   * Registers a tool with the MCP server that clients can invoke with parameters.
-   * Tools are functions that perform actions, computations, or operations and
-   * return results. They accept structured input parameters and return structured output.
-   *
-   * Supports Apps SDK metadata for ChatGPT integration via the _meta field.
-   *
-   * @param toolDefinition - Configuration object containing tool metadata and handler function
-   * @param toolDefinition.name - Unique identifier for the tool
-   * @param toolDefinition.description - Human-readable description of what the tool does
-   * @param toolDefinition.inputs - Array of input parameter definitions with types and validation
-   * @param toolDefinition.cb - Async callback function that executes the tool logic with provided parameters
-   * @param toolDefinition._meta - Optional metadata for the tool (e.g. Apps SDK metadata)
-   * @returns The server instance for method chaining
-   *
-   * @example
-   * ```typescript
-   * server.tool({
-   *   name: 'calculate',
-   *   description: 'Performs mathematical calculations',
-   *   inputs: [
-   *     { name: 'expression', type: 'string', required: true },
-   *     { name: 'precision', type: 'number', required: false }
-   *   ],
-   *   cb: async ({ expression, precision = 2 }) => {
-   *     const result = eval(expression)
-   *     return { result: Number(result.toFixed(precision)) }
-   *   },
-   *   _meta: {
-   *     'openai/outputTemplate': 'ui://widgets/calculator',
-   *     'openai/toolInvocation/invoking': 'Calculating...',
-   *     'openai/toolInvocation/invoked': 'Calculation complete'
-   *   }
-   * })
-   * ```
-   */
-  tool(toolDefinition: ToolDefinition): this {
-    const inputSchema = this.createParamsSchema(toolDefinition.inputs || []);
-
-    this.server.registerTool(
-      toolDefinition.name,
-      {
-        title: toolDefinition.title,
-        description: toolDefinition.description ?? "",
-        inputSchema,
-        annotations: toolDefinition.annotations,
-        _meta: toolDefinition._meta,
-      },
-      async (params: any) => {
-        return await toolDefinition.cb(params);
-      }
-    );
-    return this;
-  }
-
-  /**
-   * Define a prompt template
-   *
-   * Registers a prompt template with the MCP server that clients can use to generate
-   * structured prompts for AI models. Prompt templates accept parameters and return
-   * formatted text that can be used as input to language models or other AI systems.
-   *
-   * @param promptDefinition - Configuration object containing prompt metadata and handler function
-   * @param promptDefinition.name - Unique identifier for the prompt template
-   * @param promptDefinition.description - Human-readable description of the prompt's purpose
-   * @param promptDefinition.args - Array of argument definitions with types and validation
-   * @param promptDefinition.cb - Async callback function that generates the prompt from provided arguments
-   * @returns The server instance for method chaining
-   *
-   * @example
-   * ```typescript
-   * server.prompt({
-   *   name: 'code-review',
-   *   description: 'Generates a code review prompt',
-   *   args: [
-   *     { name: 'language', type: 'string', required: true },
-   *     { name: 'focus', type: 'string', required: false }
-   *   ],
-   *   cb: async ({ language, focus = 'general' }) => {
-   *     return {
-   *       messages: [{
-   *         role: 'user',
-   *         content: `Please review this ${language} code with focus on ${focus}...`
-   *       }]
-   *     }
-   *   }
-   * })
-   * ```
-   */
-  prompt(promptDefinition: PromptDefinition): this {
-    const argsSchema = this.createParamsSchema(promptDefinition.args || []);
-    this.server.registerPrompt(
-      promptDefinition.name,
-      {
-        title: promptDefinition.title,
-        description: promptDefinition.description ?? "",
-        argsSchema,
-      },
-      async (params: any): Promise<GetPromptResult> => {
-        return await promptDefinition.cb(params);
-      }
-    );
-    return this;
-  }
-
-  /**
-   * Register a UI widget as both a tool and a resource
-   *
-   * Creates a unified interface for MCP-UI compatible widgets that can be accessed
-   * either as tools (with parameters) or as resources (static access). The tool
-   * allows dynamic parameter passing while the resource provides discoverable access.
-   *
-   * Supports multiple UI resource types:
-   * - externalUrl: Legacy MCP-UI iframe-based widgets
-   * - rawHtml: Legacy MCP-UI raw HTML content
-   * - remoteDom: Legacy MCP-UI Remote DOM scripting
-   * - appsSdk: OpenAI Apps SDK compatible widgets (text/html+skybridge)
-   *
-   * @param widgetNameOrDefinition - Widget name (string) for auto-loading schema, or full configuration object
-   * @param definition.name - Unique identifier for the resource
-   * @param definition.type - Type of UI resource (externalUrl, rawHtml, remoteDom, appsSdk)
-   * @param definition.title - Human-readable title for the widget
-   * @param definition.description - Description of the widget's functionality
-   * @param definition.props - Widget properties configuration with types and defaults
-   * @param definition.size - Preferred iframe size [width, height] (e.g., ['900px', '600px'])
-   * @param definition.annotations - Resource annotations for discovery
-   * @param definition.appsSdkMetadata - Apps SDK specific metadata (CSP, widget description, etc.)
-   * @returns The server instance for method chaining
-   *
-   * @example
-   * ```typescript
-   * // Simple usage - auto-loads from generated schema
-   * server.uiResource('display-weather')
-   *
-   * // Legacy MCP-UI widget
-   * server.uiResource({
-   *   type: 'externalUrl',
-   *   name: 'kanban-board',
-   *   widget: 'kanban-board',
-   *   title: 'Kanban Board',
-   *   description: 'Interactive task management board',
-   *   props: {
-   *     initialTasks: {
-   *       type: 'array',
-   *       description: 'Initial tasks to display',
-   *       required: false
-   *     }
-   *   },
-   *   size: ['900px', '600px']
-   * })
-   *
-   * // Apps SDK widget
-   * server.uiResource({
-   *   type: 'appsSdk',
-   *   name: 'kanban-board',
-   *   title: 'Kanban Board',
-   *   description: 'Interactive task management board',
-   *   htmlTemplate: `
-   *     <div id="kanban-root"></div>
-   *     <style>${kanbanCSS}</style>
-   *     <script type="module">${kanbanJS}</script>
-   *   `,
-   *   appsSdkMetadata: {
-   *     'openai/widgetDescription': 'Displays an interactive kanban board',
-   *     'openai/widgetCSP': {
-   *       connect_domains: [],
-   *       resource_domains: ['https://cdn.example.com']
-   *     }
-   *   }
-   * })
-   * ```
-   */
-  uiResource(definition: UIResourceDefinition): this {
-    const displayName = definition.title || definition.name;
-
-    // Determine resource URI and mimeType based on type
-    let resourceUri: string;
-    let mimeType: string;
-
-    switch (definition.type) {
-      case "externalUrl":
-        resourceUri = `ui://widget/${definition.widget}`;
-        mimeType = "text/uri-list";
-        break;
-      case "rawHtml":
-        resourceUri = `ui://widget/${definition.name}`;
-        mimeType = "text/html";
-        break;
-      case "remoteDom":
-        resourceUri = `ui://widget/${definition.name}`;
-        mimeType = "application/vnd.mcp-ui.remote-dom+javascript";
-        break;
-      case "appsSdk":
-        resourceUri = `ui://widget/${definition.name}.html`;
-        mimeType = "text/html+skybridge";
-        break;
-      default:
-        throw new Error(
-          `Unsupported UI resource type. Must be one of: externalUrl, rawHtml, remoteDom, appsSdk`
-        );
-    }
-
-    // Register the resource
-    this.resource({
-      name: definition.name,
-      uri: resourceUri,
-      title: definition.title,
-      description: definition.description,
-      mimeType,
-      _meta: definition._meta,
-      annotations: definition.annotations,
-      readCallback: async () => {
-        // For externalUrl type, use default props. For others, use empty params
-        const params =
-          definition.type === "externalUrl"
-            ? this.applyDefaultProps(definition.props)
-            : {};
-
-        const uiResource = this.createWidgetUIResource(definition, params);
-
-        return {
-          contents: [uiResource.resource],
-        };
-      },
-    });
-
-    // For Apps SDK, also register a resource template to handle dynamic URIs with random IDs
-    if (definition.type === "appsSdk") {
-      this.resourceTemplate({
-        name: `${definition.name}-dynamic`,
-        resourceTemplate: {
-          uriTemplate: `ui://widget/${definition.name}-{id}.html`,
-          name: definition.title || definition.name,
-          description: definition.description,
-          mimeType,
+        capabilities: {
+          logging: {},
+          resources: {
+            subscribe: true,
+            listChanged: true,
+          },
         },
-        _meta: definition._meta,
-        title: definition.title,
-        description: definition.description,
-        annotations: definition.annotations,
-        readCallback: async (uri, params) => {
-          // Use empty params for Apps SDK since structuredContent is passed separately
-          const uiResource = this.createWidgetUIResource(definition, {});
-
-          return {
-            contents: [uiResource.resource],
-          };
-        },
-      });
-    }
-
-    // Register the tool - returns UIResource with parameters
-    // For Apps SDK, include the outputTemplate metadata
-    const toolMetadata: Record<string, unknown> = definition._meta || {};
-
-    if (definition.type === "appsSdk" && definition.appsSdkMetadata) {
-      // Add Apps SDK tool metadata
-      toolMetadata["openai/outputTemplate"] = resourceUri;
-
-      // Copy over tool-relevant metadata fields from appsSdkMetadata
-      const toolMetadataFields = [
-        "openai/toolInvocation/invoking",
-        "openai/toolInvocation/invoked",
-        "openai/widgetAccessible",
-        "openai/resultCanProduceWidget",
-      ] as const;
-
-      for (const field of toolMetadataFields) {
-        if (definition.appsSdkMetadata[field] !== undefined) {
-          toolMetadata[field] = definition.appsSdkMetadata[field];
-        }
       }
-    }
+    );
 
-    this.tool({
-      name: definition.name,
-      title: definition.title,
-      description: definition.description,
-      inputs: this.convertPropsToInputs(definition.props),
-      _meta: Object.keys(toolMetadata).length > 0 ? toolMetadata : undefined,
-      cb: async (params) => {
-        // Create the UIResource with user-provided params
-        const uiResource = this.createWidgetUIResource(definition, params);
+    // Create and configure Hono app with default middleware
+    this.app = createHonoApp(requestLogger);
 
-        // For Apps SDK, return _meta at top level with only text in content
-        if (definition.type === "appsSdk") {
-          // Generate a unique URI with random ID for each invocation
-          const randomId = Math.random().toString(36).substring(2, 15);
-          const uniqueUri = `ui://widget/${definition.name}-${randomId}.html`;
+    this.oauthProvider = config.oauth;
 
-          // Update toolMetadata with the unique URI
-          const uniqueToolMetadata = {
-            ...toolMetadata,
-            "openai/outputTemplate": uniqueUri,
-          };
+    // Wrap registration methods to capture registrations for multi-session support
+    this.wrapRegistrationMethods();
 
-          return {
-            _meta: uniqueToolMetadata,
-            content: [
-              {
-                type: "text",
-                text: `Displaying ${displayName}`,
-              },
-            ],
-            // structuredContent will be injected as window.openai.toolOutput by Apps SDK
-            structuredContent: params,
-          };
-        }
+    // Return proxied instance that allows direct access to Hono methods
+    return createHonoProxy(this, this.app);
+  }
 
-        // For other types, return standard response
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Displaying ${displayName}`,
-              description: `Show MCP-UI widget for ${displayName}`,
-            },
-            uiResource,
-          ],
+  /**
+   * Wrap registration methods to capture registrations following official SDK pattern.
+   * Each session will get a fresh server instance with all registrations replayed.
+   */
+  private wrapRegistrationMethods(): void {
+    const originalTool = toolRegistration;
+    const originalPrompt = registerPrompt;
+    const originalResource = registerResource;
+    const originalResourceTemplate = registerResourceTemplate;
+
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+
+    this.tool = (<
+      T extends import("./types/index.js").ToolDefinition<any, any, HasOAuth>,
+    >(
+      toolDefinition: T,
+      callback?: import("./types/index.js").ToolCallback<
+        import("./types/index.js").InferToolInput<T>,
+        import("./types/index.js").InferToolOutput<T>,
+        HasOAuth
+      >
+    ) => {
+      // Auto-add widget metadata if widget config is set
+      // This matches the metadata structure used by auto-registered widget tools
+      const widgetConfig = toolDefinition.widget;
+      const widgetName = widgetConfig?.name;
+
+      if (widgetConfig && widgetName) {
+        const buildIdPart = self.buildId ? `-${self.buildId}` : "";
+        const outputTemplate = `ui://widget/${widgetName}${buildIdPart}.html`;
+
+        toolDefinition._meta = {
+          ...toolDefinition._meta,
+          "openai/outputTemplate": outputTemplate,
+          "openai/toolInvocation/invoking":
+            widgetConfig.invoking ?? `Loading ${widgetName}...`,
+          "openai/toolInvocation/invoked":
+            widgetConfig.invoked ?? `${widgetName} ready`,
+          "openai/widgetAccessible": widgetConfig.widgetAccessible ?? true,
+          "openai/resultCanProduceWidget":
+            widgetConfig.resultCanProduceWidget ?? true,
         };
+      }
+
+      let actualCallback = callback || toolDefinition.cb;
+
+      // If widget config is set, wrap the callback to inject widget metadata into response
+      if (widgetConfig && widgetName && actualCallback) {
+        const originalCallback = actualCallback;
+        actualCallback = (async (params: any, ctx: any) => {
+          const result = await originalCallback(params, ctx);
+
+          // Look up the widget definition and inject its metadata into the response
+          const widgetDef = self.widgetDefinitions.get(widgetName);
+
+          if (result && typeof result === "object") {
+            // Generate unique URI for this invocation
+            const randomId = Math.random().toString(36).substring(2, 15);
+            const buildIdPart = self.buildId ? `-${self.buildId}` : "";
+            const uniqueUri = `ui://widget/${widgetName}${buildIdPart}-${randomId}.html`;
+
+            // Build response metadata
+            const responseMeta: Record<string, unknown> = {
+              ...(widgetDef || {}), // Include mcp-use/widget and other widget metadata
+              "openai/outputTemplate": uniqueUri,
+              "openai/toolInvocation/invoking":
+                widgetConfig.invoking ?? `Loading ${widgetName}...`,
+              "openai/toolInvocation/invoked":
+                widgetConfig.invoked ?? `${widgetName} ready`,
+              "openai/widgetAccessible": widgetConfig.widgetAccessible ?? true,
+              "openai/resultCanProduceWidget":
+                widgetConfig.resultCanProduceWidget ?? true,
+            };
+
+            // Set _meta on the result
+            (result as any)._meta = responseMeta;
+
+            // Update message if empty
+            if (
+              (result as any).content?.[0]?.type === "text" &&
+              !(result as any).content[0].text
+            ) {
+              (result as any).content[0].text = `Displaying ${widgetName}`;
+            }
+          }
+
+          return result;
+        }) as typeof actualCallback;
+      }
+
+      if (actualCallback) {
+        self.registrations.tools.set(toolDefinition.name, {
+          config: toolDefinition as any,
+          handler: actualCallback as any,
+        });
+      }
+      return originalTool.call(self, toolDefinition, actualCallback as any);
+    }) as any;
+
+    this.prompt = ((
+      promptDefinition:
+        | import("./types/index.js").PromptDefinition<any, HasOAuth>
+        | import("./types/index.js").PromptDefinitionWithoutCallback,
+      callback?: import("./types/index.js").PromptCallback<any, HasOAuth>
+    ) => {
+      const actualCallback = callback || (promptDefinition as any).cb;
+      if (actualCallback) {
+        self.registrations.prompts.set(promptDefinition.name, {
+          config: promptDefinition as any,
+          handler: actualCallback as any,
+        });
+      }
+      return originalPrompt.call(
+        self as any,
+        promptDefinition,
+        callback as any
+      );
+    }) as any;
+
+    this.resource = ((
+      resourceDefinition:
+        | import("./types/index.js").ResourceDefinition<HasOAuth>
+        | import("./types/index.js").ResourceDefinitionWithoutCallback,
+      callback?: import("./types/index.js").ReadResourceCallback<HasOAuth>
+    ) => {
+      const actualCallback =
+        callback || (resourceDefinition as any).readCallback;
+      if (actualCallback) {
+        const resourceKey = `${resourceDefinition.name}:${resourceDefinition.uri}`;
+        self.registrations.resources.set(resourceKey, {
+          config: resourceDefinition as any,
+          handler: actualCallback as any,
+        });
+      }
+      return originalResource.call(self, resourceDefinition, callback as any);
+    }) as any;
+
+    this.resourceTemplate = ((
+      templateDefinition:
+        | import("./types/index.js").ResourceTemplateDefinition<HasOAuth>
+        | import("./types/index.js").ResourceTemplateDefinitionWithoutCallback
+        | import("./types/index.js").FlatResourceTemplateDefinition<HasOAuth>
+        | import("./types/index.js").FlatResourceTemplateDefinitionWithoutCallback,
+      callback?: import("./types/index.js").ReadResourceTemplateCallback<HasOAuth>
+    ) => {
+      const actualCallback =
+        callback || (templateDefinition as any).readCallback;
+      if (actualCallback) {
+        self.registrations.resourceTemplates.set(templateDefinition.name, {
+          config: templateDefinition as any,
+          handler: actualCallback as any,
+        });
+      }
+      return originalResourceTemplate.call(
+        self,
+        templateDefinition,
+        callback as any
+      );
+    }) as any;
+  }
+
+  /**
+   * Create a new server instance for a session following official SDK pattern.
+   * This is called for each initialize request to create an isolated server.
+   */
+  public getServerForSession(): OfficialMcpServer {
+    const newServer = new OfficialMcpServer(
+      {
+        name: this.config.name,
+        version: this.config.version,
       },
-    });
-
-    return this;
-  }
-
-  /**
-   * Create a UIResource object for a widget with the given parameters
-   *
-   * This method is shared between tool and resource handlers to avoid duplication.
-   * It creates a consistent UIResource structure that can be rendered by MCP-UI
-   * compatible clients.
-   *
-   * @private
-   * @param definition - UIResource definition
-   * @param params - Parameters to pass to the widget via URL
-   * @returns UIResource object compatible with MCP-UI
-   */
-  private createWidgetUIResource(
-    definition: UIResourceDefinition,
-    params: Record<string, any>
-  ): UIResourceContent {
-    // If baseUrl is set, parse it to extract protocol, host, and port
-    let configBaseUrl = `http://${this.serverHost}`;
-    let configPort: number | string = this.serverPort || 3001;
-
-    if (this.serverBaseUrl) {
-      try {
-        const url = new URL(this.serverBaseUrl);
-        configBaseUrl = `${url.protocol}//${url.hostname}`;
-        configPort = url.port || (url.protocol === "https:" ? 443 : 80);
-      } catch (e) {
-        // Fall back to host:port if baseUrl parsing fails
-        console.warn("Failed to parse baseUrl, falling back to host:port", e);
+      {
+        capabilities: {
+          logging: {},
+        },
       }
-    }
+    );
 
-    const urlConfig: UrlConfig = {
-      baseUrl: configBaseUrl,
-      port: configPort,
-    };
+    // Replay all registrations on the new server
+    // Tools - with context wrapping for ctx.sample(), ctx.elicit()
+    for (const [name, registration] of this.registrations.tools) {
+      const { config, handler: actualCallback } = registration;
+      let inputSchema: Record<string, any>;
+      if (config.schema) {
+        inputSchema = this.convertZodSchemaToParams(config.schema);
+      } else if (config.inputs && config.inputs.length > 0) {
+        inputSchema = this.createParamsSchema(config.inputs);
+      } else {
+        inputSchema = {};
+      }
 
-    return createUIResourceFromDefinition(definition, params, urlConfig);
-  }
-
-  /**
-   * Build a complete URL for a widget including query parameters
-   *
-   * Constructs the full URL to access a widget's iframe, encoding any provided
-   * parameters as query string parameters. Complex objects are JSON-stringified
-   * for transmission.
-   *
-   * @private
-   * @param widget - Widget name/identifier
-   * @param params - Parameters to encode in the URL
-   * @returns Complete URL with encoded parameters
-   */
-  private buildWidgetUrl(widget: string, params: Record<string, any>): string {
-    const baseUrl = `http://${this.serverHost}:${this.serverPort}/mcp-use/widgets/${widget}`;
-
-    if (Object.keys(params).length === 0) {
-      return baseUrl;
-    }
-
-    const queryParams = new URLSearchParams();
-
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) {
-        if (typeof value === "object") {
-          queryParams.append(key, JSON.stringify(value));
-        } else {
-          queryParams.append(key, String(value));
+      // Wrap handler to provide enhanced context
+      const wrappedHandler = async (
+        params: Record<string, unknown>,
+        extra?: {
+          _meta?: { progressToken?: number };
+          sendNotification?: (notification: {
+            method: string;
+            params: Record<string, unknown>;
+          }) => Promise<void>;
         }
-      }
-    }
+      ) => {
+        const initialRequestContext = getRequestContext();
+        const extraProgressToken = extra?._meta?.progressToken;
+        const extraSendNotification = extra?.sendNotification;
 
-    return `${baseUrl}?${queryParams.toString()}`;
-  }
+        const { requestContext, session, progressToken, sendNotification } =
+          findSessionContext(
+            this.sessions,
+            initialRequestContext,
+            extraProgressToken,
+            extraSendNotification
+          );
 
-  /**
-   * Convert widget props definition to tool input schema
-   *
-   * Transforms the widget props configuration into the format expected by
-   * the tool registration system, mapping types and handling defaults.
-   *
-   * @private
-   * @param props - Widget props configuration
-   * @returns Array of InputDefinition objects for tool registration
-   */
-  private convertPropsToInputs(props?: WidgetProps): InputDefinition[] {
-    if (!props) return [];
+        // Find the sessionId by looking up the session in the sessions map
+        let sessionId: string | undefined;
+        if (session) {
+          for (const [id, s] of this.sessions.entries()) {
+            if (s === session) {
+              sessionId = id;
+              break;
+            }
+          }
+        }
 
-    return Object.entries(props).map(([name, prop]) => ({
-      name,
-      type: prop.type,
-      description: prop.description,
-      required: prop.required,
-      default: prop.default,
-    }));
-  }
+        // Use the session server's native createMessage and elicitInput
+        // These are already properly connected to the transport
+        const createMessageWithLogging = async (
+          params: CreateMessageRequest["params"],
+          options?: { timeout?: number }
+        ): Promise<CreateMessageResult> => {
+          console.log("[createMessage] About to call server.createMessage");
+          console.log("[createMessage] Has server:", !!newServer);
+          try {
+            const result = await newServer.server.createMessage(
+              params,
+              options
+            );
+            console.log("[createMessage] Got result successfully");
+            return result;
+          } catch (err: unknown) {
+            const error = err as Error & { code?: string };
+            console.error(
+              "[createMessage] Error:",
+              error.message,
+              "Code:",
+              error.code
+            );
+            throw err;
+          }
+        };
 
-  /**
-   * Apply default values to widget props
-   *
-   * Extracts default values from the props configuration to use when
-   * the resource is accessed without parameters.
-   *
-   * @private
-   * @param props - Widget props configuration
-   * @returns Object with default values for each prop
-   */
-  private applyDefaultProps(props?: WidgetProps): Record<string, any> {
-    if (!props) return {};
+        const enhancedContext = createEnhancedContext(
+          requestContext,
+          createMessageWithLogging,
+          newServer.server.elicitInput.bind(newServer.server),
+          progressToken,
+          sendNotification,
+          session?.logLevel,
+          session?.clientCapabilities,
+          sessionId,
+          this.sessions
+        );
 
-    const defaults: Record<string, any> = {};
-    for (const [key, prop] of Object.entries(props)) {
-      if (prop.default !== undefined) {
-        defaults[key] = prop.default;
-      }
-    }
-    return defaults;
-  }
+        const executeCallback = async () => {
+          if (actualCallback.length >= 2) {
+            return await (actualCallback as any)(params, enhancedContext);
+          }
+          return await (actualCallback as any)(params);
+        };
 
-  /**
-   * Check if server is running in production mode
-   *
-   * @private
-   * @returns true if in production mode, false otherwise
-   */
-  private isProductionMode(): boolean {
-    // Only check NODE_ENV - CLI commands set this explicitly
-    // 'mcp-use dev' sets NODE_ENV=development
-    // 'mcp-use start' sets NODE_ENV=production
-    return process.env.NODE_ENV === "production";
-  }
+        const startTime = Date.now();
+        let success = true;
+        let errorType: string | null = null;
 
-  /**
-   * Read build manifest file
-   *
-   * @private
-   * @returns Build manifest or null if not found
-   */
-  private readBuildManifest(): {
-    includeInspector: boolean;
-    widgets: string[];
-    buildTime?: string;
-  } | null {
-    try {
-      const manifestPath = join(
-        process.cwd(),
-        "dist",
-        ".mcp-use-manifest.json"
-      );
-      const content = readFileSync(manifestPath, "utf8");
-      return JSON.parse(content);
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Mount widget files - automatically chooses between dev and production mode
-   *
-   * In development mode: creates Vite dev servers with HMR support
-   * In production mode: serves pre-built static widgets
-   *
-   * @param options - Configuration options
-   * @param options.baseRoute - Base route for widgets (defaults to '/mcp-use/widgets')
-   * @param options.resourcesDir - Directory containing widget files (defaults to 'resources')
-   * @returns Promise that resolves when all widgets are mounted
-   */
-  async mountWidgets(options?: {
-    baseRoute?: string;
-    resourcesDir?: string;
-  }): Promise<void> {
-    if (this.isProductionMode()) {
-      await this.mountWidgetsProduction(options);
-    } else {
-      await this.mountWidgetsDev(options);
-    }
-  }
-
-  /**
-   * Mount individual widget files from resources/ directory in development mode
-   *
-   * Scans the resources/ directory for .tsx/.ts widget files and creates individual
-   * Vite dev servers for each widget with HMR support. Each widget is served at its
-   * own route: /mcp-use/widgets/{widget-name}
-   *
-   * @private
-   * @param options - Configuration options
-   * @param options.baseRoute - Base route for widgets (defaults to '/mcp-use/widgets')
-   * @param options.resourcesDir - Directory containing widget files (defaults to 'resources')
-   * @returns Promise that resolves when all widgets are mounted
-   */
-  private async mountWidgetsDev(options?: {
-    baseRoute?: string;
-    resourcesDir?: string;
-  }): Promise<void> {
-    const { promises: fs } = await import("node:fs");
-    const baseRoute = options?.baseRoute || "/mcp-use/widgets";
-    const resourcesDir = options?.resourcesDir || "resources";
-    const srcDir = join(process.cwd(), resourcesDir);
-
-    // Check if resources directory exists
-    try {
-      await fs.access(srcDir);
-    } catch (error) {
-      console.log(
-        `[WIDGETS] No ${resourcesDir}/ directory found - skipping widget serving`
-      );
-      return;
-    }
-
-    // Find all TSX widget files
-    let entries: string[] = [];
-    try {
-      const files = await fs.readdir(srcDir);
-      entries = files
-        .filter((f) => f.endsWith(".tsx") || f.endsWith(".ts"))
-        .map((f) => join(srcDir, f));
-    } catch (error) {
-      console.log(`[WIDGETS] No widgets found in ${resourcesDir}/ directory`);
-      return;
-    }
-
-    if (entries.length === 0) {
-      console.log(`[WIDGETS] No widgets found in ${resourcesDir}/ directory`);
-      return;
-    }
-
-    // Create a temp directory for widget entry files
-    const tempDir = join(process.cwd(), TMP_MCP_USE_DIR);
-    await fs.mkdir(tempDir, { recursive: true }).catch(() => {});
-
-    const react = (await import("@vitejs/plugin-react")).default;
-    const tailwindcss = (await import("@tailwindcss/vite")).default;
-    console.log(react, tailwindcss);
-
-    const widgets = entries.map((entry) => {
-      const baseName =
-        entry
-          .split("/")
-          .pop()
-          ?.replace(/\.tsx?$/, "") || "widget";
-      const widgetName = baseName;
-      return {
-        name: widgetName,
-        description: `Widget: ${widgetName}`,
-        entry: entry,
+        try {
+          const result = requestContext
+            ? await runWithContext(requestContext, executeCallback)
+            : await executeCallback();
+          return result;
+        } catch (err) {
+          success = false;
+          errorType = err instanceof Error ? err.name : "unknown_error";
+          throw err;
+        } finally {
+          const executionTimeMs = Date.now() - startTime;
+          Telemetry.getInstance()
+            .trackServerToolCall({
+              toolName: name,
+              lengthInputArgument: JSON.stringify(params).length,
+              success,
+              errorType,
+              executionTimeMs,
+            })
+            .catch((e) => console.debug(`Failed to track tool call: ${e}`));
+        }
       };
-    });
 
-    // Create entry files for each widget
-    for (const widget of widgets) {
-      // Create temp entry and HTML files for this widget
-      const widgetTempDir = join(tempDir, widget.name);
-      await fs.mkdir(widgetTempDir, { recursive: true });
-
-      // Create a CSS file with Tailwind and @source directives to scan resources
-      const resourcesPath = join(process.cwd(), resourcesDir);
-      const { relative } = await import("node:path");
-      const relativeResourcesPath = relative(
-        widgetTempDir,
-        resourcesPath
-      ).replace(/\\/g, "/");
-      const cssContent = `@import "tailwindcss";
-
-/* Configure Tailwind to scan the resources directory */
-@source "${relativeResourcesPath}";
-`;
-      await fs.writeFile(join(widgetTempDir, "styles.css"), cssContent, "utf8");
-
-      const entryContent = `import React from 'react'
-import { createRoot } from 'react-dom/client'
-import './styles.css'
-import Component from '${widget.entry}'
-
-const container = document.getElementById('widget-root')
-if (container && Component) {
-  const root = createRoot(container)
-  root.render(<Component />)
-}
-`;
-
-      const htmlContent = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>${widget.name} Widget</title>
-  </head>
-  <body>
-    <div id="widget-root"></div>
-    <script type="module" src="${baseRoute}/${widget.name}/entry.tsx"></script>
-  </body>
-</html>`;
-
-      await fs.writeFile(
-        join(widgetTempDir, "entry.tsx"),
-        entryContent,
-        "utf8"
-      );
-      await fs.writeFile(
-        join(widgetTempDir, "index.html"),
-        htmlContent,
-        "utf8"
+      newServer.registerTool(
+        name,
+        {
+          title: config.title,
+          description: config.description ?? "",
+          inputSchema,
+          annotations: config.annotations,
+          _meta: config._meta,
+        },
+        wrappedHandler as any
       );
     }
 
-    // Build the server origin URL
-    const serverOrigin =
-      this.serverBaseUrl || `http://${this.serverHost}:${this.serverPort}`;
+    // Prompts
+    for (const [name, registration] of this.registrations.prompts) {
+      const { config, handler } = registration;
 
-    // Create a single shared Vite dev server for all widgets
-    console.log(
-      `[WIDGETS] Serving ${entries.length} widget(s) with shared Vite dev server and HMR`
-    );
-
-    const viteServer = await createServer({
-      root: tempDir,
-      base: baseRoute + "/",
-      plugins: [tailwindcss(), react()],
-      resolve: {
-        alias: {
-          "@": join(process.cwd(), resourcesDir),
-        },
-      },
-      server: {
-        middlewareMode: true,
-        origin: serverOrigin,
-      },
-    });
-
-    // Custom middleware to handle widget-specific paths
-    this.app.use(baseRoute, (req, res, next) => {
-      const urlPath = req.url || "";
-      const [pathname, queryString] = urlPath.split("?");
-      const widgetMatch = pathname.match(/^\/([^/]+)/);
-
-      if (widgetMatch) {
-        const widgetName = widgetMatch[1];
-        const widget = widgets.find((w) => w.name === widgetName);
-
-        if (widget) {
-          // If requesting the root of a widget, serve its index.html
-          if (pathname === `/${widgetName}` || pathname === `/${widgetName}/`) {
-            req.url = `/${widgetName}/index.html${queryString ? "?" + queryString : ""}`;
-          }
-          // For assets, keep the original URL but Vite will handle it from the widget's directory
-        }
+      // Determine input schema - prefer schema over args
+      let argsSchema: Record<string, z.ZodSchema> | undefined;
+      if (config.schema) {
+        argsSchema = this.convertZodSchemaToParams(config.schema);
+      } else if (config.args && config.args.length > 0) {
+        argsSchema = this.createParamsSchema(config.args);
+      } else {
+        // No schema validation when neither schema nor args are provided
+        argsSchema = undefined;
       }
 
-      next();
-    });
+      // Wrap handler to support both CallToolResult and GetPromptResult
+      const wrappedHandler = async (
+        params: Record<string, unknown>,
+        extra?: any
+      ) => {
+        let success = true;
+        let errorType: string | null = null;
 
-    // Mount the single Vite server for all widgets
-    this.app.use(baseRoute, viteServer.middlewares);
+        try {
+          const result = await (handler as any)(params, extra);
 
-    widgets.forEach((widget) => {
-      console.log(
-        `[WIDGET] ${widget.name} mounted at ${baseRoute}/${widget.name}`
+          // If it's already a GetPromptResult, return as-is
+          if ("messages" in result && Array.isArray(result.messages)) {
+            return result as any;
+          }
+
+          // Convert CallToolResult to GetPromptResult
+          const { convertToolResultToPromptResult } =
+            await import("./prompts/conversion.js");
+          return convertToolResultToPromptResult(result) as any;
+        } catch (err) {
+          success = false;
+          errorType = err instanceof Error ? err.name : "unknown_error";
+          throw err;
+        } finally {
+          Telemetry.getInstance()
+            .trackServerPromptCall({
+              name,
+              description: config.description ?? null,
+              success,
+              errorType,
+            })
+            .catch((e) => console.debug(`Failed to track prompt call: ${e}`));
+        }
+      };
+
+      newServer.registerPrompt(
+        name,
+        {
+          title: config.title,
+          description: config.description ?? "",
+          argsSchema: argsSchema as any,
+        },
+        wrappedHandler as any
       );
-    });
+    }
 
-    // register a tool and resource for each widget
-    for (const widget of widgets) {
-      // for now expose all widgets as appsSdk
-      const type = "appsSdk";
+    // Resources
+    for (const [_key, registration] of this.registrations.resources) {
+      const { config, handler } = registration;
+      // Wrap handler to support both CallToolResult and ReadResourceResult
+      const wrappedHandler = async (extra?: any) => {
+        let success = true;
+        let errorType: string | null = null;
+        let contents: any[] = [];
 
-      // Extract metadata from the widget file using Vite SSR
-      let metadata: WidgetMetadata = {};
-      let props = {};
-      let description = widget.description;
+        try {
+          const result = await (handler as any)(extra);
+          // If it's already a ReadResourceResult, return as-is
+          if ("contents" in result && Array.isArray(result.contents)) {
+            contents = result.contents;
+            return result as any;
+          }
+          // Convert CallToolResult to ReadResourceResult
+          // Import convertToolResultToResourceResult dynamically to avoid circular dependencies
+          const { convertToolResultToResourceResult } =
+            await import("./resources/conversion.js");
+          const converted = convertToolResultToResourceResult(
+            config.uri,
+            result
+          ) as any;
+          contents = converted.contents || [];
+          return converted;
+        } catch (err) {
+          success = false;
+          errorType = err instanceof Error ? err.name : "unknown_error";
+          throw err;
+        } finally {
+          Telemetry.getInstance()
+            .trackServerResourceCall({
+              name: config.name,
+              description: config.description ?? null,
+              contents: contents.map((c: any) => ({
+                mime_type: c.mimeType ?? null,
+                text: c.text ? `[text: ${c.text.length} chars]` : null,
+                blob: c.blob ? `[blob: ${c.blob.length} bytes]` : null,
+              })),
+              success,
+              errorType,
+            })
+            .catch((e) => console.debug(`Failed to track resource call: ${e}`));
+        }
+      };
 
-      try {
-        const mod = await viteServer.ssrLoadModule(widget.entry);
-        if (mod.widgetMetadata) {
-          metadata = mod.widgetMetadata;
-          description = metadata.description || widget.description;
+      newServer.registerResource(
+        config.name,
+        config.uri,
+        {
+          title: config.title,
+          description: config.description,
+          mimeType: config.mimeType || "text/plain",
+        } as any,
+        wrappedHandler as any
+      );
+    }
 
-          // Convert Zod schema to JSON schema for props if available
-          if (metadata.inputs) {
-            // The inputs is a Zod schema, we can use zodToJsonSchema or extract shape
-            try {
-              // For now, store the zod schema info
-              props = metadata.inputs.shape || {};
-            } catch (error) {
-              console.warn(
-                `[WIDGET] Failed to extract props schema for ${widget.name}:`,
-                error
-              );
+    // Resource Templates
+    for (const [_name, registration] of this.registrations.resourceTemplates) {
+      const { config, handler } = registration;
+
+      // Detect structure type: flat (uriTemplate on config) vs nested (resourceTemplate.uriTemplate)
+      const isFlatStructure = "uriTemplate" in config;
+
+      // Extract uriTemplate and metadata based on structure
+      const uriTemplate = isFlatStructure
+        ? (config as any).uriTemplate
+        : config.resourceTemplate.uriTemplate;
+
+      const mimeType = isFlatStructure
+        ? (config as any).mimeType
+        : config.resourceTemplate.mimeType;
+
+      const templateDescription = isFlatStructure
+        ? undefined
+        : config.resourceTemplate.description;
+
+      // Create ResourceTemplate instance from SDK
+      const template = new ResourceTemplate(uriTemplate, {
+        list: undefined,
+        complete: undefined,
+      });
+
+      // Create metadata object
+      const metadata: Record<string, unknown> = {};
+      if (config.title) {
+        metadata.title = config.title;
+      }
+      if (config.description || templateDescription) {
+        metadata.description = config.description || templateDescription;
+      }
+      if (mimeType) {
+        metadata.mimeType = mimeType;
+      }
+      if (config.annotations) {
+        metadata.annotations = config.annotations;
+      }
+
+      newServer.registerResource(
+        config.name,
+        template,
+        metadata as any,
+        async (uri: URL, extra?: any) => {
+          let success = true;
+          let errorType: string | null = null;
+          let contents: any[] = [];
+
+          try {
+            // Parse URI parameters from the template
+            const params = this.parseTemplateUri(uriTemplate, uri.toString());
+            const result = await (handler as any)(uri, params, extra);
+
+            // If it's already a ReadResourceResult, return as-is
+            if ("contents" in result && Array.isArray(result.contents)) {
+              contents = result.contents;
+              return result as any;
             }
+
+            // Convert CallToolResult to ReadResourceResult
+            const { convertToolResultToResourceResult } =
+              await import("./resources/conversion.js");
+            const converted = convertToolResultToResourceResult(
+              uri.toString(),
+              result
+            ) as any;
+            contents = converted.contents || [];
+            return converted;
+          } catch (err) {
+            success = false;
+            errorType = err instanceof Error ? err.name : "unknown_error";
+            throw err;
+          } finally {
+            Telemetry.getInstance()
+              .trackServerResourceCall({
+                name: config.name,
+                description: config.description ?? null,
+                contents: contents.map((c: any) => ({
+                  mimeType: c.mimeType ?? null,
+                  text: c.text ? `[text: ${c.text.length} chars]` : null,
+                  blob: c.blob ? `[blob: ${c.blob.length} bytes]` : null,
+                })),
+                success,
+                errorType,
+              })
+              .catch((e) =>
+                console.debug(`Failed to track resource template call: ${e}`)
+              );
           }
         }
-      } catch (error) {
+      );
+    }
+
+    // Register logging/setLevel handler per MCP specification
+    newServer.server.setRequestHandler(
+      z.object({ method: z.literal("logging/setLevel") }).passthrough(),
+      (async (request: { params?: { level?: string } }, extra?: any) => {
+        const level = request.params?.level;
+
+        // Validate log level parameter
+        if (!level) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "Missing 'level' parameter"
+          );
+        }
+
+        if (!isValidLogLevel(level)) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `Invalid log level '${level}'. Must be one of: debug, info, notice, warning, error, critical, alert, emergency`
+          );
+        }
+
+        // Get current request context to find the session
+        const requestContext = getRequestContext();
+        if (requestContext) {
+          // Extract session ID from header
+          const sessionId = requestContext.req.header("mcp-session-id");
+
+          if (sessionId && this.sessions.has(sessionId)) {
+            // Store log level in session data
+            const session = this.sessions.get(sessionId)!;
+            session.logLevel = level;
+            console.log(
+              `[MCP] Set log level to '${level}' for session ${sessionId}`
+            );
+            return {};
+          }
+        }
+
+        // If we can't find the session, try to find it in the sessions map
+        // This handles cases where the request context isn't available
+        for (const [sessionId, session] of this.sessions.entries()) {
+          if (session.server === newServer) {
+            session.logLevel = level;
+            console.log(
+              `[MCP] Set log level to '${level}' for session ${sessionId}`
+            );
+            return {};
+          }
+        }
+
+        // If no session found, return error
         console.warn(
-          `[WIDGET] Failed to load metadata for ${widget.name}:`,
-          error
+          "[MCP] Could not find session for logging/setLevel request"
         );
-      }
-
-      console.log("[WIDGET dev] Metadata:", metadata);
-
-      let html = "";
-      try {
-        html = readFileSync(join(tempDir, widget.name, "index.html"), "utf8");
-        // Inject or replace base tag with MCP_URL
-        const mcpUrl = process.env.MCP_URL || "/";
-        if (mcpUrl && html) {
-          // Remove HTML comments temporarily to avoid matching base tags inside comments
-          const htmlWithoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
-
-          // Try to replace existing base tag (only if not in comments)
-          const baseTagRegex = /<base\s+[^>]*\/?>/i;
-          if (baseTagRegex.test(htmlWithoutComments)) {
-            // Find and replace the actual base tag in the original HTML
-            const actualBaseTagMatch = html.match(/<base\s+[^>]*\/?>/i);
-            if (actualBaseTagMatch) {
-              html = html.replace(
-                actualBaseTagMatch[0],
-                `<base href="${mcpUrl}" />`
-              );
-            }
-          } else {
-            // Inject base tag in head if it doesn't exist
-            const headTagRegex = /<head[^>]*>/i;
-            if (headTagRegex.test(html)) {
-              html = html.replace(
-                headTagRegex,
-                (match) => `${match}\n    <base href="${mcpUrl}" />`
-              );
-            }
-          }
-        }
-
-        // replace relative path that starts with /mcp-use script and css with absolute
-        html = html.replace(
-          /src="\/mcp-use\/widgets\/([^"]+)"/g,
-          `src="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-        );
-        html = html.replace(
-          /href="\/mcp-use\/widgets\/([^"]+)"/g,
-          `href="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-        );
-
-        // add window.__getFile to head
-        html = html.replace(
-          /<head[^>]*>/i,
-          `<head>\n    <script>window.__getFile = (filename) => { return "${this.serverBaseUrl}/mcp-use/widgets/${widget.name}/"+filename }</script>`
-        );
-      } catch (error) {
-        console.error(
-          `Failed to read html template for widget ${widget.name}`,
-          error
-        );
-      }
-
-      // // html template is the content of the vite built html
-      // const html = await fetch(`${this.serverBaseUrl}/mcp-use/widgets/${widget.name}/index.html`).then(res => res.text())
-      // if (!html) {
-      //   throw new Error(`Failed to fetch html template for widget ${widget.name}`)
-      // }
-
-      this.uiResource({
-        name: widget.name,
-        title: metadata.title || widget.name,
-        description: description,
-        type: type,
-        props: props,
-        _meta: {
-          "mcp-use/widget": {
-            name: widget.name,
-            title: metadata.title || widget.name,
-            description: description,
-            type: type,
-            props: props,
-            html: html,
-            dev: true,
-          },
-          ...(metadata._meta || {}),
-        },
-        htmlTemplate: html,
-        appsSdkMetadata: {
-          "openai/widgetDescription": description,
-          "openai/toolInvocation/invoking": `Loading ${widget.name}...`,
-          "openai/toolInvocation/invoked": `${widget.name} ready`,
-          "openai/widgetAccessible": true,
-          "openai/resultCanProduceWidget": true,
-          ...(metadata.appsSdkMetadata || {}),
-          "openai/widgetCSP": {
-            connect_domains: [
-              // always also add the base url of the server
-              ...(this.serverBaseUrl ? [this.serverBaseUrl] : []),
-              ...(metadata.appsSdkMetadata?.["openai/widgetCSP"]
-                ?.connect_domains || []),
-            ],
-            resource_domains: [
-              "https://*.oaistatic.com",
-              "https://*.oaiusercontent.com",
-              // always also add the base url of the server
-              ...(this.serverBaseUrl ? [this.serverBaseUrl] : []),
-              ...(metadata.appsSdkMetadata?.["openai/widgetCSP"]
-                ?.resource_domains || []),
-            ],
-          },
-        },
-      });
-    }
-  }
-
-  /**
-   * Mount pre-built widgets from dist/resources/widgets/ directory in production mode
-   *
-   * Serves static widget bundles that were built using the build command.
-   * Sets up Express routes to serve the HTML and asset files, then registers
-   * tools and resources for each widget.
-   *
-   * @private
-   * @param options - Configuration options
-   * @param options.baseRoute - Base route for widgets (defaults to '/mcp-use/widgets')
-   * @returns Promise that resolves when all widgets are mounted
-   */
-  private async mountWidgetsProduction(options?: {
-    baseRoute?: string;
-    resourcesDir?: string;
-  }): Promise<void> {
-    const baseRoute = options?.baseRoute || "/mcp-use/widgets";
-    const widgetsDir = join(process.cwd(), "dist", "resources", "widgets");
-
-    // Check if widgets directory exists
-    if (!existsSync(widgetsDir)) {
-      console.log(
-        "[WIDGETS] No dist/resources/widgets/ directory found - skipping widget serving"
-      );
-      return;
-    }
-
-    // Setup static file serving routes
-    this.setupWidgetRoutes();
-
-    // Discover built widgets
-    const widgets = readdirSync(widgetsDir).filter((name) => {
-      const widgetPath = join(widgetsDir, name);
-      const indexPath = join(widgetPath, "index.html");
-      return existsSync(indexPath);
-    });
-
-    if (widgets.length === 0) {
-      console.log(
-        "[WIDGETS] No built widgets found in dist/resources/widgets/"
-      );
-      return;
-    }
-
-    console.log(
-      `[WIDGETS] Serving ${widgets.length} pre-built widget(s) from dist/resources/widgets/`
+        throw new McpError(ErrorCode.InternalError, "Could not find session");
+      }) as any
     );
 
-    // Register tools and resources for each widget
-    for (const widgetName of widgets) {
-      const widgetPath = join(widgetsDir, widgetName);
-      const indexPath = join(widgetPath, "index.html");
-      const metadataPath = join(widgetPath, "metadata.json");
+    // Register resource subscription handlers
+    this.subscriptionManager.registerHandlers(newServer, this.sessions);
 
-      // Read the HTML template
-      let html = "";
-      try {
-        html = readFileSync(indexPath, "utf8");
-        // Inject or replace base tag with MCP_URL
-        const mcpUrl = process.env.MCP_URL || "/";
-        if (mcpUrl && html) {
-          // Remove HTML comments temporarily to avoid matching base tags inside comments
-          const htmlWithoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
-
-          // Try to replace existing base tag (only if not in comments)
-          const baseTagRegex = /<base\s+[^>]*\/?>/i;
-          if (baseTagRegex.test(htmlWithoutComments)) {
-            // Find and replace the actual base tag in the original HTML
-            const actualBaseTagMatch = html.match(/<base\s+[^>]*\/?>/i);
-            if (actualBaseTagMatch) {
-              html = html.replace(
-                actualBaseTagMatch[0],
-                `<base href="${mcpUrl}" />`
-              );
-            }
-          } else {
-            // Inject base tag in head if it doesn't exist
-            const headTagRegex = /<head[^>]*>/i;
-            if (headTagRegex.test(html)) {
-              html = html.replace(
-                headTagRegex,
-                (match) => `${match}\n    <base href="${mcpUrl}" />`
-              );
-            }
-          }
-
-          // replace relative path that starts with /mcp-use script and css with absolute
-          html = html.replace(
-            /src="\/mcp-use\/widgets\/([^"]+)"/g,
-            `src="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-          );
-          html = html.replace(
-            /href="\/mcp-use\/widgets\/([^"]+)"/g,
-            `href="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-          );
-
-          // add window.__getFile to head
-          html = html.replace(
-            /<head[^>]*>/i,
-            `<head>\n    <script>window.__getFile = (filename) => { return "${this.serverBaseUrl}/mcp-use/widgets/${widgetName}/"+filename }</script>`
-          );
-        }
-      } catch (error) {
-        console.error(
-          `[WIDGET] Failed to read ${widgetName}/index.html:`,
-          error
-        );
-        continue;
-      }
-
-      // Read the metadata file if it exists
-      let metadata: WidgetMetadata = {};
-      let props = {};
-      let description = `Widget: ${widgetName}`;
-
-      try {
-        const metadataContent = readFileSync(metadataPath, "utf8");
-        metadata = JSON.parse(metadataContent);
-        if (metadata.description) {
-          description = metadata.description;
-        }
-        if (metadata.inputs) {
-          props = metadata.inputs;
-        }
-      } catch (error) {
-        // Metadata file doesn't exist or couldn't be read - use defaults
-        console.log(
-          `[WIDGET] No metadata found for ${widgetName}, using defaults`
-        );
-      }
-
-      this.uiResource({
-        name: widgetName,
-        title: metadata.title || widgetName,
-        description: description,
-        type: "appsSdk",
-        props: props,
-        _meta: {
-          "mcp-use/widget": {
-            name: widgetName,
-            description: description,
-            type: "appsSdk",
-            props: props,
-            html: html,
-            dev: false,
-          },
-          ...(metadata._meta || {}),
-        },
-        htmlTemplate: html,
-        appsSdkMetadata: {
-          "openai/widgetDescription": description,
-          "openai/toolInvocation/invoking": `Loading ${widgetName}...`,
-          "openai/toolInvocation/invoked": `${widgetName} ready`,
-          "openai/widgetAccessible": true,
-          "openai/resultCanProduceWidget": true,
-          ...(metadata.appsSdkMetadata || {}),
-          "openai/widgetCSP": {
-            connect_domains: [
-              // always also add the base url of the server
-              ...(this.serverBaseUrl ? [this.serverBaseUrl] : []),
-              ...(metadata.appsSdkMetadata?.["openai/widgetCSP"]
-                ?.connect_domains || []),
-            ],
-            resource_domains: [
-              "https://*.oaistatic.com",
-              "https://*.oaiusercontent.com",
-              // always also add the base url of the server
-              ...(this.serverBaseUrl ? [this.serverBaseUrl] : []),
-              ...(metadata.appsSdkMetadata?.["openai/widgetCSP"]
-                ?.resource_domains || []),
-            ],
-          },
-        },
-      });
-
-      console.log(
-        `[WIDGET] ${widgetName} mounted at ${baseRoute}/${widgetName}`
-      );
-    }
+    return newServer;
   }
 
   /**
-   * Mount MCP server endpoints at /mcp
+   * Gets the server base URL with fallback to host:port if not configured
+   * @returns The complete base URL for the server
+   */
+  private getServerBaseUrl(): string {
+    return getServerBaseUrlHelper(
+      this.serverBaseUrl,
+      this.serverHost,
+      this.serverPort
+    );
+  }
+
+  // Tool registration helper - type is set in wrapRegistrationMethods
+  public tool!: <T extends ToolDefinition<any, any, HasOAuth>>(
+    toolDefinition: T,
+    callback?: ToolCallback<InferToolInput<T>, InferToolOutput<T>, HasOAuth>
+  ) => this;
+
+  // Schema conversion helpers (used by tool registration)
+  public convertZodSchemaToParams = convertZodSchemaToParams;
+  public createParamsSchema = createParamsSchema;
+
+  // Template URI parsing helper (used by resource templates)
+  public parseTemplateUri = parseTemplateUriHelper;
+
+  // Resource registration helpers - types are set in wrapRegistrationMethods
+  public resource!: (
+    resourceDefinition:
+      | ResourceDefinition<HasOAuth>
+      | import("./types/index.js").ResourceDefinitionWithoutCallback,
+    callback?: ReadResourceCallback<HasOAuth>
+  ) => this;
+  public resourceTemplate!: (
+    templateDefinition:
+      | ResourceTemplateDefinition<HasOAuth>
+      | import("./types/index.js").ResourceTemplateDefinitionWithoutCallback
+      | import("./types/index.js").FlatResourceTemplateDefinition<HasOAuth>
+      | import("./types/index.js").FlatResourceTemplateDefinitionWithoutCallback,
+    callback?: ReadResourceTemplateCallback<HasOAuth>
+  ) => this;
+
+  // Prompt registration helper - type is set in wrapRegistrationMethods
+  public prompt!: (
+    promptDefinition:
+      | PromptDefinition<any, HasOAuth>
+      | import("./types/index.js").PromptDefinitionWithoutCallback,
+    callback?: PromptCallback<any, HasOAuth>
+  ) => this;
+
+  // Notification helpers
+  public getActiveSessions = getActiveSessions;
+  public sendNotification = sendNotification;
+  public sendNotificationToSession = sendNotificationToSession;
+
+  /**
+   * Notify subscribed clients that a resource has been updated
+   *
+   * This method sends a `notifications/resources/updated` notification to all
+   * sessions that have subscribed to the specified resource URI.
+   *
+   * @param uri - The URI of the resource that changed
+   * @returns Promise that resolves when all notifications have been sent
+   *
+   * @example
+   * ```typescript
+   * // After updating a resource, notify subscribers
+   * await server.notifyResourceUpdated("file:///path/to/resource.txt");
+   * ```
+   */
+  public async notifyResourceUpdated(uri: string): Promise<void> {
+    return this.subscriptionManager.notifyResourceUpdated(uri, this.sessions);
+  }
+
+  public uiResource = (
+    definition: Parameters<typeof uiResourceRegistration>[1]
+  ) => {
+    return uiResourceRegistration(this as any, definition);
+  };
+
+  /**
+   * Mount MCP server endpoints at /mcp and /sse
    *
    * Sets up the HTTP transport layer for the MCP server, creating endpoints for
    * Server-Sent Events (SSE) streaming, POST message handling, and DELETE session cleanup.
-   * Each request gets its own transport instance to prevent state conflicts between
-   * concurrent client connections.
+   * The transport manages multiple sessions through a single server instance.
    *
    * This method is called automatically when the server starts listening and ensures
    * that MCP clients can communicate with the server over HTTP.
@@ -1266,118 +922,223 @@ if (container && Component) {
    *
    * @example
    * Endpoints created:
-   * - GET /mcp - SSE streaming endpoint for real-time communication
-   * - POST /mcp - Message handling endpoint for MCP protocol messages
-   * - DELETE /mcp - Session cleanup endpoint
+   * - GET /mcp, GET /sse - SSE streaming endpoint for real-time communication
+   * - POST /mcp, POST /sse - Message handling endpoint for MCP protocol messages
+   * - DELETE /mcp, DELETE /sse - Session cleanup endpoint
    */
   private async mountMcp(): Promise<void> {
     if (this.mcpMounted) return;
 
-    const { StreamableHTTPServerTransport } = await import(
-      "@modelcontextprotocol/sdk/server/streamableHttp.js"
+    const result = await mountMcpHelper(
+      this.app,
+      this, // Pass the MCPServer instance so mountMcp can call getServerForSession()
+      this.sessions,
+      this.config,
+      isProductionModeHelper()
     );
 
-    const endpoint = "/mcp";
-
-    // POST endpoint for messages
-    // Create a new transport for each request to support multiple concurrent clients
-    this.app.post(endpoint, express.json(), async (req, res) => {
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-
-      res.on("close", () => {
-        transport.close();
-      });
-
-      await this.server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    });
-
-    // GET endpoint for SSE streaming
-    this.app.get(endpoint, async (req, res) => {
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-
-      res.on("close", () => {
-        transport.close();
-      });
-
-      await this.server.connect(transport);
-      await transport.handleRequest(req, res);
-    });
-
-    // DELETE endpoint for session cleanup
-    this.app.delete(endpoint, async (req, res) => {
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-
-      res.on("close", () => {
-        transport.close();
-      });
-
-      await this.server.connect(transport);
-      await transport.handleRequest(req, res);
-    });
-
-    this.mcpMounted = true;
-    console.log(`[MCP] Server mounted at ${endpoint}`);
+    this.mcpMounted = result.mcpMounted;
   }
 
   /**
-   * Start the Express server with MCP endpoints
+   * Start the Hono server with MCP endpoints
    *
    * Initiates the server startup process by mounting MCP endpoints, configuring
-   * the inspector UI (if available), and starting the Express server to listen
+   * the inspector UI (if available), and starting the server to listen
    * for incoming connections. This is the main entry point for running the server.
    *
-   * The server will be accessible at the specified port with MCP endpoints at /mcp
+   * The server will be accessible at the specified port with MCP endpoints at /mcp and /sse
    * and inspector UI at /inspector (if the inspector package is installed).
    *
-   * @param port - Port number to listen on (defaults to 3001 if not specified)
+   * @param port - Port number to listen on (defaults to 3000 if not specified)
    * @returns Promise that resolves when the server is successfully listening
    *
    * @example
    * ```typescript
    * await server.listen(8080)
    * // Server now running at http://localhost:8080 (or configured host)
-   * // MCP endpoints: http://localhost:8080/mcp
+   * // MCP endpoints: http://localhost:8080/mcp and http://localhost:8080/sse
    * // Inspector UI: http://localhost:8080/inspector
    * ```
    */
+  /**
+   * Log registered tools, prompts, and resources to console
+   */
+  private logRegisteredItems(): void {
+    logRegisteredItemsHelper(
+      this.registeredTools,
+      this.registeredPrompts,
+      this.registeredResources
+    );
+  }
+
+  public getBuildId() {
+    return this.buildId;
+  }
+
+  public getServerPort() {
+    return this.serverPort || 3000;
+  }
+
+  /**
+   * Create a message for sampling (calling the LLM)
+   * Delegates to the native SDK server
+   */
+  public async createMessage(
+    params: CreateMessageRequest["params"],
+    options?: any
+  ): Promise<CreateMessageResult> {
+    return await this.nativeServer.server.createMessage(params, options);
+  }
+
   async listen(port?: number): Promise<void> {
-    // Priority: parameter > PORT env var > default (3001)
-    this.serverPort =
-      port || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3001);
+    // Priority: parameter > PORT env var > default (3000)
+    const portEnv = getEnv("PORT");
+    this.serverPort = port || (portEnv ? parseInt(portEnv, 10) : 3000);
 
     // Update host from HOST env var if set
-    if (process.env.HOST) {
-      this.serverHost = process.env.HOST;
+    const hostEnv = getEnv("HOST");
+    if (hostEnv) {
+      this.serverHost = hostEnv;
     }
 
-    await this.mountWidgets({
+    // Update baseUrl using the helper that checks MCP_URL env var
+    // This ensures widgets/assets use the correct public URL instead of 0.0.0.0
+    this.serverBaseUrl = getServerBaseUrlHelper(
+      this.serverBaseUrl,
+      this.serverHost,
+      this.serverPort
+    );
+
+    // Setup OAuth before mounting widgets/MCP (if configured)
+    if (this.oauthProvider && !this.oauthSetupState.complete) {
+      await setupOAuthForServer(
+        this.app,
+        this.oauthProvider,
+        this.getServerBaseUrl(),
+        this.oauthSetupState
+      );
+    }
+
+    await mountWidgets(this as any, {
       baseRoute: "/mcp-use/widgets",
       resourcesDir: "resources",
     });
     await this.mountMcp();
 
     // Mount inspector BEFORE Vite middleware to ensure it handles /inspector routes
-    this.mountInspector();
+    await this.mountInspector();
 
-    this.app.listen(this.serverPort, () => {
-      console.log(
-        `[SERVER] Listening on http://${this.serverHost}:${this.serverPort}`
-      );
-      console.log(
-        `[MCP] Endpoints: http://${this.serverHost}:${this.serverPort}/mcp`
-      );
+    // Log registered items before starting server
+    this.logRegisteredItems();
+
+    // Track server run event
+    this._trackServerRun("http");
+
+    // Start server using runtime-aware helper
+    await startServer(this.app, this.serverPort, this.serverHost, {
+      onDenoRequest: rewriteSupabaseRequest,
     });
   }
+
+  private _trackServerRun(transport: string): void {
+    Telemetry.getInstance()
+      .trackServerRunFromServer(this, transport)
+      .catch((e) => console.debug(`Failed to track server run: ${e}`));
+  }
+
+  /**
+   * Get the fetch handler for the server after mounting all endpoints
+   *
+   * This method prepares the server by mounting MCP endpoints, widgets, and inspector
+   * (if available), then returns the fetch handler. This is useful for integrating
+   * with external server frameworks like Supabase Edge Functions, Cloudflare Workers,
+   * or other platforms that handle the server lifecycle themselves.
+   *
+   * Unlike `listen()`, this method does not start a server - it only prepares the
+   * routes and returns the handler function that can be used with external servers.
+   *
+   * @param options - Optional configuration for the handler
+   * @param options.provider - Platform provider (e.g., 'supabase') to handle platform-specific path rewriting
+   * @returns Promise that resolves to the fetch handler function
+   *
+   * @example
+   * ```typescript
+   * // For Supabase Edge Functions (handles path rewriting automatically)
+   * const server = new MCPServer({ name: 'my-server', version: '1.0.0' });
+   * server.tool({ ... });
+   * const handler = await server.getHandler({ provider: 'supabase' });
+   * Deno.serve(handler);
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // For Cloudflare Workers
+   * const server = new MCPServer({ name: 'my-server', version: '1.0.0' });
+   * server.tool({ ... });
+   * const handler = await server.getHandler();
+   * export default { fetch: handler };
+   * ```
+   */
+  async getHandler(options?: {
+    provider?: "supabase" | "cloudflare" | "deno-deploy";
+  }): Promise<(req: Request) => Promise<Response>> {
+    // Setup OAuth before mounting widgets/MCP (if configured)
+    if (this.oauthProvider && !this.oauthSetupState.complete) {
+      await setupOAuthForServer(
+        this.app,
+        this.oauthProvider,
+        this.getServerBaseUrl(),
+        this.oauthSetupState
+      );
+    }
+
+    console.log("[MCP] Mounting widgets");
+    await mountWidgets(this as any, {
+      baseRoute: "/mcp-use/widgets",
+      resourcesDir: "resources",
+    });
+    console.log("[MCP] Mounted widgets");
+    await this.mountMcp();
+    console.log("[MCP] Mounted MCP");
+    console.log("[MCP] Mounting inspector");
+    await this.mountInspector();
+    console.log("[MCP] Mounted inspector");
+
+    const provider = options?.provider || "fetch";
+    this._trackServerRun(provider);
+
+    // Wrap the fetch handler to ensure it always returns a Promise<Response>
+    const fetchHandler = this.app.fetch.bind(this.app);
+
+    // Handle platform-specific path rewriting and CORS
+    if (options?.provider === "supabase") {
+      return async (req: Request) => {
+        const corsHeaders = getDenoCorsHeaders();
+
+        // Handle CORS preflight
+        if (req.method === "OPTIONS") {
+          return new Response("ok", { headers: corsHeaders });
+        }
+
+        // Rewrite path and process request
+        const rewrittenReq = rewriteSupabaseRequest(req);
+        const result = await fetchHandler(rewrittenReq);
+
+        // Apply CORS headers to response
+        return applyDenoCorsHeaders(result);
+      };
+    }
+
+    return async (req: Request) => {
+      const result = await fetchHandler(req);
+      return result;
+    };
+  }
+
+  // Roots registration helpers
+  onRootsChanged = onRootsChanged.bind(this);
+  listRoots = listRoots.bind(this);
 
   /**
    * Mount MCP Inspector UI at /inspector
@@ -1395,353 +1156,51 @@ if (container && Component) {
    * @example
    * If @mcp-use/inspector is installed:
    * - Inspector UI available at http://localhost:PORT/inspector
-   * - Automatically connects to http://localhost:PORT/mcp
+   * - Automatically connects to http://localhost:PORT/mcp (or /sse)
    *
    * If not installed:
    * - Server continues to function normally
    * - No inspector UI available
    */
-  private mountInspector(): void {
+  private async mountInspector(): Promise<void> {
     if (this.inspectorMounted) return;
 
-    // In production, only mount if build manifest says so
-    if (this.isProductionMode()) {
-      const manifest = this.readBuildManifest();
-      if (!manifest?.includeInspector) {
-        console.log(
-          "[INSPECTOR] Skipped in production (use --with-inspector flag during build)"
-        );
-        return;
-      }
+    const mounted = await mountInspectorUI(
+      this.app,
+      this.serverHost,
+      this.serverPort,
+      isProductionModeHelper()
+    );
+
+    if (mounted) {
+      this.inspectorMounted = true;
     }
-
-    // Try to dynamically import the inspector package
-    // Using dynamic import makes it truly optional - won't fail if not installed
-
-    // @ts-ignore - Optional peer dependency, may not be installed during build
-    import("@mcp-use/inspector")
-      .then(({ mountInspector }) => {
-        // Auto-connect to the local MCP server at /mcp
-        mountInspector(this.app);
-        this.inspectorMounted = true;
-        console.log(
-          `[INSPECTOR] UI available at http://${this.serverHost}:${this.serverPort}/inspector`
-        );
-      })
-      .catch(() => {
-        // Inspector package not installed, skip mounting silently
-        // This allows the server to work without the inspector in production
-      });
-  }
-
-  /**
-   * Setup default widget serving routes
-   *
-   * Configures Express routes to serve MCP UI widgets and their static assets.
-   * Widgets are served from the dist/resources/widgets directory and can
-   * be accessed via HTTP endpoints for embedding in web applications.
-   *
-   * Routes created:
-   * - GET /mcp-use/widgets/:widget - Serves widget's index.html
-   * - GET /mcp-use/widgets/:widget/assets/* - Serves widget-specific assets
-   * - GET /mcp-use/widgets/assets/* - Fallback asset serving with auto-discovery
-   *
-   * @private
-   * @returns void
-   *
-   * @example
-   * Widget routes:
-   * - http://localhost:3001/mcp-use/widgets/kanban-board
-   * - http://localhost:3001/mcp-use/widgets/todo-list/assets/style.css
-   * - http://localhost:3001/mcp-use/widgets/assets/script.js (auto-discovered)
-   */
-  private setupWidgetRoutes(): void {
-    // Serve static assets (JS, CSS) from the assets directory
-    this.app.get("/mcp-use/widgets/:widget/assets/*", (req, res, next) => {
-      const widget = req.params.widget;
-      const assetFile = (req.params as any)[0];
-      const assetPath = join(
-        process.cwd(),
-        "dist",
-        "resources",
-        "widgets",
-        widget,
-        "assets",
-        assetFile
-      );
-      res.sendFile(assetPath, (err) => (err ? next() : undefined));
-    });
-
-    // Handle assets served from the wrong path (browser resolves ./assets/ relative to /mcp-use/widgets/)
-    this.app.get("/mcp-use/widgets/assets/*", (req, res, next) => {
-      const assetFile = (req.params as any)[0];
-      // Try to find which widget this asset belongs to by checking all widget directories
-      const widgetsDir = join(process.cwd(), "dist", "resources", "widgets");
-
-      try {
-        const widgets = readdirSync(widgetsDir);
-        for (const widget of widgets) {
-          const assetPath = join(widgetsDir, widget, "assets", assetFile);
-          if (existsSync(assetPath)) {
-            return res.sendFile(assetPath);
-          }
-        }
-        next();
-      } catch {
-        next();
-      }
-    });
-
-    // Serve each widget's index.html at its route
-    // e.g. GET /mcp-use/widgets/kanban-board -> dist/resources/widgets/kanban-board/index.html
-    this.app.get("/mcp-use/widgets/:widget", (req, res, next) => {
-      const filePath = join(
-        process.cwd(),
-        "dist",
-        "resources",
-        "widgets",
-        req.params.widget,
-        "index.html"
-      );
-
-      let html = readFileSync(filePath, "utf8");
-      // replace relative path that starts with /mcp-use script and css with absolute
-      html = html.replace(
-        /src="\/mcp-use\/widgets\/([^"]+)"/g,
-        `src="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-      );
-      html = html.replace(
-        /href="\/mcp-use\/widgets\/([^"]+)"/g,
-        `href="${this.serverBaseUrl}/mcp-use/widgets/$1"`
-      );
-
-      // add window.__getFile to head
-      html = html.replace(
-        /<head[^>]*>/i,
-        `<head>\n    <script>window.__getFile = (filename) => { return "${this.serverBaseUrl}/mcp-use/widgets/${req.params.widget}/"+filename }</script>`
-      );
-
-      res.send(html);
-    });
-  }
-
-  /**
-   * Create input schema for resource templates
-   *
-   * Parses a URI template string to extract parameter names and generates a Zod
-   * validation schema for those parameters. Used internally for validating resource
-   * template parameters before processing requests.
-   *
-   * @param uriTemplate - URI template string with parameter placeholders (e.g., "/users/{id}/posts/{postId}")
-   * @returns Object mapping parameter names to Zod string schemas
-   *
-   * @example
-   * ```typescript
-   * const schema = this.createInputSchema("/users/{id}/posts/{postId}")
-   * // Returns: { id: z.string(), postId: z.string() }
-   * ```
-   */
-  private createInputSchema(uriTemplate: string): Record<string, z.ZodSchema> {
-    const params = this.extractTemplateParams(uriTemplate);
-    const schema: Record<string, z.ZodSchema> = {};
-
-    params.forEach((param) => {
-      schema[param] = z.string();
-    });
-
-    return schema;
-  }
-
-  /**
-   * Create input schema for tools
-   *
-   * Converts tool input definitions into Zod validation schemas for runtime validation.
-   * Supports common data types (string, number, boolean, object, array) and optional
-   * parameters. Used internally when registering tools with the MCP server.
-   *
-   * @param inputs - Array of input parameter definitions with name, type, and optional flag
-   * @returns Object mapping parameter names to Zod validation schemas
-   *
-   * @example
-   * ```typescript
-   * const schema = this.createParamsSchema([
-   *   { name: 'query', type: 'string', required: true, description: 'Search query' },
-   *   { name: 'limit', type: 'number', required: false }
-   * ])
-   * // Returns: { query: z.string().describe('Search query'), limit: z.number().optional() }
-   * ```
-   */
-  private createParamsSchema(
-    inputs: Array<{
-      name: string;
-      type: string;
-      required?: boolean;
-      description?: string;
-    }>
-  ): Record<string, z.ZodSchema> {
-    const schema: Record<string, z.ZodSchema> = {};
-
-    inputs.forEach((input) => {
-      let zodType: z.ZodSchema;
-      switch (input.type) {
-        case "string":
-          zodType = z.string();
-          break;
-        case "number":
-          zodType = z.number();
-          break;
-        case "boolean":
-          zodType = z.boolean();
-          break;
-        case "object":
-          zodType = z.object({});
-          break;
-        case "array":
-          zodType = z.array(z.any());
-          break;
-        default:
-          zodType = z.any();
-      }
-
-      // Add description if provided
-      if (input.description) {
-        zodType = zodType.describe(input.description);
-      }
-
-      if (!input.required) {
-        zodType = zodType.optional();
-      }
-
-      schema[input.name] = zodType;
-    });
-
-    return schema;
-  }
-
-  /**
-   * Create arguments schema for prompts
-   *
-   * Converts prompt argument definitions into Zod validation schemas for runtime validation.
-   * Supports common data types (string, number, boolean, object, array) and optional
-   * parameters. Used internally when registering prompt templates with the MCP server.
-   *
-   * @param inputs - Array of argument definitions with name, type, and optional flag
-   * @returns Object mapping argument names to Zod validation schemas
-   *
-   * @example
-   * ```typescript
-   * const schema = this.createPromptArgsSchema([
-   *   { name: 'topic', type: 'string', required: true },
-   *   { name: 'style', type: 'string', required: false }
-   * ])
-   * // Returns: { topic: z.string(), style: z.string().optional() }
-   * ```
-   */
-  private createPromptArgsSchema(
-    inputs: Array<{ name: string; type: string; required?: boolean }>
-  ): Record<string, z.ZodSchema> {
-    const schema: Record<string, z.ZodSchema> = {};
-
-    inputs.forEach((input) => {
-      let zodType: z.ZodSchema;
-      switch (input.type) {
-        case "string":
-          zodType = z.string();
-          break;
-        case "number":
-          zodType = z.number();
-          break;
-        case "boolean":
-          zodType = z.boolean();
-          break;
-        case "object":
-          zodType = z.object({});
-          break;
-        case "array":
-          zodType = z.array(z.any());
-          break;
-        default:
-          zodType = z.any();
-      }
-
-      if (!input.required) {
-        zodType = zodType.optional();
-      }
-
-      schema[input.name] = zodType;
-    });
-
-    return schema;
-  }
-
-  /**
-   * Extract parameter names from URI template
-   *
-   * Parses a URI template string to extract parameter names enclosed in curly braces.
-   * Used internally to identify dynamic parameters in resource templates and generate
-   * appropriate validation schemas.
-   *
-   * @param uriTemplate - URI template string with parameter placeholders (e.g., "/users/{id}/posts/{postId}")
-   * @returns Array of parameter names found in the template
-   *
-   * @example
-   * ```typescript
-   * const params = this.extractTemplateParams("/users/{id}/posts/{postId}")
-   * // Returns: ["id", "postId"]
-   * ```
-   */
-  private extractTemplateParams(uriTemplate: string): string[] {
-    const matches = uriTemplate.match(/\{([^}]+)\}/g);
-    return matches ? matches.map((match) => match.slice(1, -1)) : [];
-  }
-
-  /**
-   * Parse parameter values from a URI based on a template
-   *
-   * Extracts parameter values from an actual URI by matching it against a URI template.
-   * The template contains placeholders like {param} which are extracted as key-value pairs.
-   *
-   * @param template - URI template with placeholders (e.g., "user://{userId}/posts/{postId}")
-   * @param uri - Actual URI to parse (e.g., "user://123/posts/456")
-   * @returns Object mapping parameter names to their values
-   *
-   * @example
-   * ```typescript
-   * const params = this.parseTemplateUri("user://{userId}/posts/{postId}", "user://123/posts/456")
-   * // Returns: { userId: "123", postId: "456" }
-   * ```
-   */
-  private parseTemplateUri(
-    template: string,
-    uri: string
-  ): Record<string, string> {
-    const params: Record<string, string> = {};
-
-    // Convert template to a regex pattern
-    // Escape special regex characters except {}
-    let regexPattern = template.replace(/[.*+?^$()[\]\\|]/g, "\\$&");
-
-    // Replace {param} with named capture groups
-    const paramNames: string[] = [];
-    regexPattern = regexPattern.replace(/\\\{([^}]+)\\\}/g, (_, paramName) => {
-      paramNames.push(paramName);
-      return "([^/]+)";
-    });
-
-    const regex = new RegExp(`^${regexPattern}$`);
-    const match = uri.match(regex);
-
-    if (match) {
-      paramNames.forEach((paramName, index) => {
-        params[paramName] = match[index + 1];
-      });
-    }
-
-    return params;
   }
 }
 
-export type McpServerInstance = Omit<McpServer, keyof Express> & Express;
+export type McpServerInstance<HasOAuth extends boolean = false> =
+  MCPServerClass<HasOAuth> & HonoType;
+
+// Type alias for use in type annotations (e.g., function parameters)
+export type MCPServer<HasOAuth extends boolean = false> =
+  MCPServerClass<HasOAuth>;
+
+// Interface to properly type the MCPServer constructor with OAuth overloads
+export interface MCPServerConstructor {
+  // Overload: when OAuth is configured, return McpServerInstance<true>
+  new (
+    config: ServerConfig & { oauth: NonNullable<ServerConfig["oauth"]> }
+  ): McpServerInstance<true>;
+  // Overload: when OAuth is not configured, return McpServerInstance<false>
+  new (config: ServerConfig): McpServerInstance<false>;
+  prototype: MCPServerClass<boolean>;
+}
+
+// Export MCPServer constructor with proper return typing
+// This allows both: `function foo(server: MCPServer)` and `new MCPServer()`
+// TypeScript allows both a type and a const with the same name (declaration merging)
+// eslint-disable-next-line @typescript-eslint/no-redeclare, no-redeclare
+export const MCPServer: MCPServerConstructor = MCPServerClass as any;
 
 /**
  * Create a new MCP server instance
@@ -1752,39 +1211,85 @@ export type McpServerInstance = Omit<McpServer, keyof Express> & Express;
  * @param config.description - Server description
  * @param config.host - Hostname for widget URLs and server endpoints (defaults to 'localhost')
  * @param config.baseUrl - Full base URL (e.g., 'https://myserver.com') - overrides host:port for widget URLs
- * @returns McpServerInstance with both MCP and Express methods
+ * @param config.allowedOrigins - Allowed origins for DNS rebinding protection
+ *   - **Development mode** (NODE_ENV !== "production"): If not set, all origins are allowed
+ *   - **Production mode** (NODE_ENV === "production"): Only uses explicitly configured origins
+ *   - See {@link ServerConfig.allowedOrigins} for detailed documentation
+ * @param config.sessionIdleTimeoutMs - Idle timeout for sessions in milliseconds (default: 300000 = 5 minutes)
+ * @returns McpServerInstance with both MCP and Hono methods
  *
  * @example
  * ```typescript
- * // Basic usage
+ * // Recommended: Use class constructor (matches MCPClient/MCPAgent pattern)
+ * const server = new MCPServer({
+ *   name: 'my-server',
+ *   version: '1.0.0',
+ *   description: 'My MCP server'
+ * })
+ *
+ * // Legacy: Factory function (still supported for backward compatibility)
  * const server = createMCPServer('my-server', {
  *   version: '1.0.0',
  *   description: 'My MCP server'
  * })
  *
+ * // Production mode with explicit allowed origins
+ * const server = new MCPServer({
+ *   name: 'my-server',
+ *   version: '1.0.0',
+ *   allowedOrigins: [
+ *     'https://myapp.com',
+ *     'https://app.myapp.com'
+ *   ]
+ * })
+ *
  * // With custom host (e.g., for Docker or remote access)
- * const server = createMCPServer('my-server', {
+ * const server = new MCPServer({
+ *   name: 'my-server',
  *   version: '1.0.0',
  *   host: '0.0.0.0' // or 'myserver.com'
  * })
  *
  * // With full base URL (e.g., behind a proxy or custom domain)
- * const server = createMCPServer('my-server', {
+ * const server = new MCPServer({
+ *   name: 'my-server',
  *   version: '1.0.0',
  *   baseUrl: 'https://myserver.com' // or process.env.MCP_URL
  * })
  * ```
  */
+
+// Overload: when OAuth is configured
+
+export function createMCPServer(
+  name: string,
+  config: Partial<ServerConfig> & { oauth: NonNullable<ServerConfig["oauth"]> }
+): McpServerInstance<true>;
+
+// Overload: when OAuth is not configured
+// eslint-disable-next-line no-redeclare
+export function createMCPServer(
+  name: string,
+  config?: Partial<ServerConfig>
+): McpServerInstance<false>;
+
+// Implementation
+// eslint-disable-next-line no-redeclare
 export function createMCPServer(
   name: string,
   config: Partial<ServerConfig> = {}
-): McpServerInstance {
-  const instance = new McpServer({
+): McpServerInstance<boolean> {
+  const instance = new MCPServerClass({
     name,
     version: config.version || "1.0.0",
     description: config.description,
     host: config.host,
     baseUrl: config.baseUrl,
-  });
-  return instance as unknown as McpServerInstance;
+    allowedOrigins: config.allowedOrigins,
+    sessionIdleTimeoutMs: config.sessionIdleTimeoutMs,
+    autoCreateSessionOnInvalidId: config.autoCreateSessionOnInvalidId,
+    oauth: config.oauth,
+  }) as any;
+
+  return instance as unknown as McpServerInstance<boolean>;
 }

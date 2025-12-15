@@ -10,6 +10,10 @@ import {
   storeWidgetData,
 } from "./shared-utils-browser.js";
 import { formatErrorResponse } from "./utils.js";
+import { rpcLogBus, type RpcLogEvent } from "./rpc-log-bus.js";
+
+// WebSocket proxy for Vite HMR - note: requires WebSocket library
+// For now, this is a placeholder that will be implemented when WebSocket support is added
 
 /**
  * Register inspector-specific routes (proxy, chat, config, widget rendering)
@@ -237,6 +241,218 @@ export function registerInspectorRoutes(
     }
   });
 
+  // Dev widget HTML proxy - fetches from dev server and injects OpenAI wrapper
+  app.get("/inspector/api/dev-widget/:toolId", async (c) => {
+    try {
+      const toolId = c.req.param("toolId");
+      const widgetData = getWidgetData(toolId);
+
+      if (!widgetData?.devWidgetUrl || !widgetData?.devServerBaseUrl) {
+        return c.html(
+          "<html><body>Error: Dev widget data not found or expired</body></html>",
+          404
+        );
+      }
+
+      // Fetch HTML from dev server
+      const response = await fetch(widgetData.devWidgetUrl);
+      if (!response.ok) {
+        const status = response.status as 400 | 404 | 500 | 502 | 503;
+        return c.html(
+          `<html><body>Error: Failed to fetch widget from dev server (${response.status})</body></html>`,
+          status
+        );
+      }
+
+      let html = await response.text();
+
+      // Create a modified widgetData with the fetched HTML as resourceData
+      const modifiedWidgetData = {
+        ...widgetData,
+        resourceData: {
+          contents: [{ text: html }],
+        },
+      };
+
+      // Inject OpenAI wrapper using existing logic
+      const result = generateWidgetContentHtml(modifiedWidgetData);
+
+      if (result.error) {
+        return c.html(`<html><body>Error: ${result.error}</body></html>`, 500);
+      }
+
+      // Use the HTML with injected wrapper for path rewriting
+      html = result.html;
+
+      // Rewrite asset paths to go through proxy
+      const proxyBase = `/inspector/api/dev-widget/${toolId}/assets`;
+
+      // Extract widget name from devWidgetUrl if available
+      const widgetNameMatch = widgetData.devWidgetUrl?.match(
+        /\/mcp-use\/widgets\/([^/?]+)/
+      );
+      const widgetName = widgetNameMatch ? widgetNameMatch[1] : "widget";
+
+      // Replace absolute paths to dev server with proxy paths
+      const escapedBaseUrl = widgetData.devServerBaseUrl.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+      html = html.replace(
+        new RegExp(
+          `(src|href)="(${escapedBaseUrl}/mcp-use/widgets/[^"]+)"`,
+          "g"
+        ),
+        (_match, attr, url) => {
+          // Extract the path after the base URL
+          const path = url.replace(widgetData.devServerBaseUrl, "");
+          return `${attr}="${proxyBase}${path}"`;
+        }
+      );
+
+      // Also handle relative paths that start with /mcp-use/widgets/
+      // In dev mode, load all assets directly from dev server for simplicity
+      // This avoids issues with dynamically loaded assets that bypass HTML rewriting
+      html = html.replace(
+        /(src|href)="(\/mcp-use\/widgets\/[^"]+)"/g,
+        (_match, attr, path) => {
+          // Rewrite to absolute URL pointing to dev server
+          return `${attr}="${widgetData.devServerBaseUrl}${path}"`;
+        }
+      );
+
+      // Handle Vite's asset imports (e.g., import.meta.url, __VITE_ASSET__)
+      // These are typically handled by Vite's dev server, but we rewrite base paths
+      html = html.replace(/(src|href)="\.\/([^"]+)"/g, (match, attr, path) => {
+        // Only rewrite if it's in a script context or if it looks like an asset
+        if (
+          path.match(/\.(js|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot)$/i)
+        ) {
+          return `${attr}="${proxyBase}/mcp-use/widgets/${widgetName}/${path}"`;
+        }
+        return match;
+      });
+
+      // Inject base tag and Vite HMR WebSocket configuration
+      if (widgetData.devServerBaseUrl) {
+        const devServerUrl = new URL(widgetData.devServerBaseUrl);
+        const wsProtocol = devServerUrl.protocol === "https:" ? "wss" : "ws";
+        const wsHost = devServerUrl.host; // e.g., "localhost:3004"
+
+        // Point directly to Vite HMR endpoint on the dev server
+        const directWsUrl = `${wsProtocol}://${wsHost}/mcp-use/widgets/`;
+
+        // Inject base tag to make all relative URLs resolve against dev server
+        // This is critical for Vite's dynamic module loading
+        // MUST be injected right after <head> tag, before any scripts
+        const baseTag = `<base href="${widgetData.devServerBaseUrl}/mcp-use/widgets/${widgetName}/">`;
+
+        // Inject CSP violation listener to warn about non-whitelisted resources
+        const cspWarningScript = `
+    <script>
+      // Listen for CSP violations (from Report-Only policy)
+      document.addEventListener('securitypolicyviolation', (e) => {
+        // Only warn about report-only violations (not enforced ones)
+        if (e.disposition === 'report') {
+          console.warn(
+            '%c⚠️ CSP Warning: Resource would be blocked in production',
+            'color: orange; font-weight: bold',
+            '\\n  Blocked URL:', e.blockedURI,
+            '\\n  Directive:', e.violatedDirective,
+            '\\n  Policy:', e.originalPolicy,
+            '\\n\\nℹ️ To fix: Add this domain to your widget\\'s CSP configuration in appsSdkMetadata[\\'openai/widgetCSP\\']'
+          );
+        }
+      });
+    </script>`;
+
+        // Inject configuration script before Vite client loads
+        // This tells Vite where to connect for HMR
+        const viteConfigScript = `
+    <script>
+      // Configure Vite HMR to connect directly to dev server
+      window.__vite_ws_url__ = "${directWsUrl}";
+    </script>`;
+
+        // Insert base tag immediately after <head> (before any scripts)
+        html = html.replace(/<head>/i, `<head>\n    ${baseTag}`);
+
+        // Insert CSP warning and config scripts before the first script tag
+        html = html.replace(
+          /<script/,
+          cspWarningScript + viteConfigScript + "\n    <script"
+        );
+      }
+
+      // Set security headers
+      const headers = getWidgetSecurityHeaders(
+        widgetData.widgetCSP,
+        widgetData.devServerBaseUrl
+      );
+      Object.entries(headers).forEach(([key, value]) => {
+        c.header(key, value);
+      });
+
+      return c.html(html);
+    } catch (error) {
+      console.error("[Dev Widget Proxy] Error:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      return c.html(`<html><body>Error: ${errorMessage}</body></html>`, 500);
+    }
+  });
+
+  // Dev widget asset proxy - forwards asset requests to dev server
+  app.get("/inspector/api/dev-widget/:toolId/assets/*", async (c) => {
+    try {
+      const toolId = c.req.param("toolId");
+      const assetPath = c.req.path.replace(
+        `/inspector/api/dev-widget/${toolId}/assets`,
+        ""
+      );
+      const widgetData = getWidgetData(toolId);
+
+      if (!widgetData?.devServerBaseUrl) {
+        return c.notFound();
+      }
+
+      // Construct full URL to dev server asset
+      const devAssetUrl = `${widgetData.devServerBaseUrl}${assetPath}`;
+
+      // Forward request to dev server
+      const response = await fetch(devAssetUrl, {
+        headers: {
+          Accept: c.req.header("Accept") || "*/*",
+        },
+      });
+
+      if (!response.ok) {
+        return c.notFound();
+      }
+
+      // Forward response with appropriate headers
+      const contentType =
+        response.headers.get("Content-Type") || "application/octet-stream";
+      const headers: Record<string, string> = {
+        "Content-Type": contentType,
+      };
+
+      // Forward cache headers if present
+      const cacheControl = response.headers.get("Cache-Control");
+      if (cacheControl) {
+        headers["Cache-Control"] = cacheControl;
+      }
+
+      return new Response(response.body, {
+        status: response.status,
+        headers,
+      });
+    } catch (error) {
+      console.error("[Dev Widget Asset Proxy] Error:", error);
+      return c.notFound();
+    }
+  });
+
   // Inspector config endpoint
   app.get("/inspector/config.json", (c) => {
     return c.json({
@@ -317,5 +533,113 @@ export function registerInspectorRoutes(
       // Don't fail - telemetry should be silent
       return c.json({ success: false });
     }
+  });
+
+  // RPC Log endpoint - receives RPC events from browser
+  app.post("/inspector/api/rpc/log", async (c) => {
+    try {
+      const event = (await c.req.json()) as RpcLogEvent;
+      rpcLogBus.publish(event);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error("[RPC Log] Error receiving RPC event:", error);
+      return c.json({ success: false });
+    }
+  });
+
+  // Clear RPC log buffer endpoint
+  app.delete("/inspector/api/rpc/log", async (c) => {
+    try {
+      const url = new URL(c.req.url);
+      const serverIdsParam = url.searchParams.get("serverIds");
+      const serverIds = serverIdsParam
+        ? serverIdsParam.split(",").filter(Boolean)
+        : undefined;
+      rpcLogBus.clear(serverIds);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error("[RPC Log] Error clearing RPC log:", error);
+      return c.json({ success: false });
+    }
+  });
+
+  // RPC Stream endpoint - streams RPC events via SSE
+  app.get("/inspector/api/rpc/stream", async (c) => {
+    const url = new URL(c.req.url);
+    const replay = parseInt(url.searchParams.get("replay") || "3", 10);
+    const serverIdsParam = url.searchParams.get("serverIds");
+    const serverIds = serverIdsParam
+      ? serverIdsParam.split(",").filter(Boolean)
+      : [];
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (data: unknown) => {
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
+            );
+          } catch {
+            // Ignore encoding errors
+          }
+        };
+
+        // Replay recent messages
+        try {
+          const recent = rpcLogBus.getBuffer(
+            serverIds,
+            isNaN(replay) ? 3 : replay
+          );
+          for (const evt of recent) {
+            send({ type: "rpc", ...evt });
+          }
+        } catch {
+          // Ignore replay errors
+        }
+
+        // Subscribe to live events
+        const unsubscribe = rpcLogBus.subscribe(
+          serverIds,
+          (evt: RpcLogEvent) => {
+            send({ type: "rpc", ...evt });
+          }
+        );
+
+        // Keepalive comments
+        const keepalive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
+          } catch {
+            // Ignore keepalive errors
+          }
+        }, 15000);
+
+        // Cleanup on client disconnect
+        c.req.raw.signal?.addEventListener("abort", () => {
+          try {
+            clearInterval(keepalive);
+            unsubscribe();
+          } catch {
+            // Ignore cleanup errors
+          }
+          try {
+            controller.close();
+          } catch {
+            // Ignore close errors
+          }
+        });
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "*",
+      },
+    });
   });
 }

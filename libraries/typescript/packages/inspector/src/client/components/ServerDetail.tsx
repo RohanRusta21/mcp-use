@@ -18,6 +18,7 @@ import {
 } from "@/client/components/ui/card";
 import { Textarea } from "@/client/components/ui/textarea";
 import { useMcpContext } from "@/client/context/McpContext";
+import { JSONDisplay } from "./shared/JSONDisplay";
 
 export function ServerDetail() {
   const { serverId } = useParams();
@@ -48,7 +49,12 @@ export function ServerDetail() {
     setIsExecuting(true);
     try {
       const inputArgs = JSON.parse(toolInput);
-      const result = await connection.callTool(toolName, inputArgs);
+      // Use a 10 minute timeout for tool calls, as tools may trigger sampling
+      // which can take a long time (waiting for LLM responses or human input)
+      const result = await connection.callTool(toolName, inputArgs, {
+        timeout: 600000, // 10 minutes
+        resetTimeoutOnProgress: true,
+      });
       setToolResult({
         tool: toolName,
         input: inputArgs,
@@ -149,9 +155,12 @@ export function ServerDetail() {
                             <Code className="w-3 h-3 inline mr-1" />
                             View Schema
                           </summary>
-                          <pre className="mt-2 p-2 bg-muted rounded overflow-auto">
-                            {JSON.stringify(tool.inputSchema, null, 2)}
-                          </pre>
+                          <div className="mt-2 p-2 bg-muted rounded overflow-auto">
+                            <JSONDisplay
+                              data={tool.inputSchema}
+                              filename={`tool-schema-${tool.name}.json`}
+                            />
+                          </div>
                         </details>
                       )}
                     </div>
@@ -259,9 +268,12 @@ export function ServerDetail() {
                     }`}
                   >
                     <h4 className="font-semibold mb-2">Result:</h4>
-                    <pre className="text-sm overflow-auto max-h-96">
-                      {JSON.stringify(toolResult, null, 2)}
-                    </pre>
+                    <div className="max-h-96 overflow-auto">
+                      <JSONDisplay
+                        data={toolResult}
+                        filename={`tool-result-${selectedTool}-${Date.now()}.json`}
+                      />
+                    </div>
                   </div>
                 )}
               </CardContent>

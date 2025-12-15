@@ -1,9 +1,15 @@
 import type {
+  CreateMessageRequest,
+  CreateMessageResult,
+  ElicitRequestFormParams,
+  ElicitRequestURLParams,
+  ElicitResult,
+  Notification,
   Prompt,
   Resource,
   ResourceTemplate,
   Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import type { BrowserMCPClient } from "../client/browser.js";
 
 export type UseMcpOptions = {
@@ -36,10 +42,21 @@ export type UseMcpOptions = {
   popupFeatures?: string;
   /** Transport type preference: 'auto' (HTTP with SSE fallback), 'http' (HTTP only), 'sse' (SSE only) */
   transportType?: "auto" | "http" | "sse";
-  /** Prevent automatic authentication popup on initial connection (default: false) */
+  /**
+   * Prevent automatic authentication popup/redirect on initial connection (default: false)
+   * When true, the connection will enter 'pending_auth' state and wait for user to call authenticate()
+   * Set to true to show a modal/button before triggering OAuth instead of auto-redirecting
+   */
   preventAutoAuth?: boolean;
   /**
+   * Use full-page redirect for OAuth instead of popup window (default: false)
+   * Redirect flow avoids popup blockers and provides better UX on mobile.
+   * Set to true to use redirect flow instead of popup.
+   */
+  useRedirectFlow?: boolean;
+  /**
    * Callback function that is invoked just before the authentication popup window is opened.
+   * Only used when useRedirectFlow is false (popup mode).
    * @param url The URL that will be opened in the popup.
    * @param features The features string for the popup window.
    */
@@ -52,6 +69,30 @@ export type UseMcpOptions = {
   timeout?: number;
   /** SSE read timeout in milliseconds to prevent idle connection drops (default: 300000 / 5 minutes) */
   sseReadTimeout?: number;
+  /** Optional callback to wrap the transport before passing it to the Client. Useful for logging, monitoring, or other transport-level interceptors. */
+  wrapTransport?: (transport: any, serverId: string) => any;
+  /** Callback function that is invoked when a notification is received from the MCP server */
+  onNotification?: (notification: Notification) => void;
+  /**
+   * Optional callback function to handle sampling requests from servers.
+   * When provided, the client will declare sampling capability and handle
+   * `sampling/createMessage` requests by calling this callback.
+   */
+  samplingCallback?: (
+    params: CreateMessageRequest["params"]
+  ) => Promise<CreateMessageResult>;
+  /**
+   * Optional callback function to handle elicitation requests from servers.
+   * When provided, the client will declare elicitation capability and handle
+   * `elicitation/create` requests by calling this callback.
+   *
+   * Elicitation allows servers to request additional information from users:
+   * - Form mode: Collect structured data with JSON schema validation
+   * - URL mode: Direct users to external URLs for sensitive interactions
+   */
+  onElicitation?: (
+    params: ElicitRequestFormParams | ElicitRequestURLParams
+  ) => Promise<ElicitResult>;
 };
 
 export type UseMcpResult = {
@@ -63,6 +104,13 @@ export type UseMcpResult = {
   resourceTemplates: ResourceTemplate[];
   /** List of prompts available from the connected MCP server */
   prompts: Prompt[];
+  /** Server information from the initialize response */
+  serverInfo?: {
+    name: string;
+    version?: string;
+  };
+  /** Server capabilities from the initialize response */
+  capabilities?: Record<string, any>;
   /**
    * The current state of the MCP connection:
    * - 'discovering': Checking server existence and capabilities (including auth requirements).
@@ -98,10 +146,36 @@ export type UseMcpResult = {
    * Function to call a tool on the MCP server.
    * @param name The name of the tool to call.
    * @param args Optional arguments for the tool.
+   * @param options Optional request options including timeout configuration.
    * @returns A promise that resolves with the tool's result.
    * @throws If the client is not in the 'ready' state or the call fails.
+   *
+   * @example
+   * ```typescript
+   * // Simple tool call
+   * const result = await mcp.callTool('my-tool', { arg: 'value' })
+   *
+   * // Tool call with extended timeout (e.g., for tools that trigger sampling)
+   * const result = await mcp.callTool('analyze-sentiment', { text: 'Hello' }, {
+   *   timeout: 300000, // 5 minutes
+   *   resetTimeoutOnProgress: true // Reset timeout when progress notifications are received
+   * })
+   * ```
    */
-  callTool: (name: string, args?: Record<string, unknown>) => Promise<any>;
+  callTool: (
+    name: string,
+    args?: Record<string, unknown>,
+    options?: {
+      /** Timeout in milliseconds for this tool call (default: 60000 / 60 seconds) */
+      timeout?: number;
+      /** Maximum total timeout in milliseconds, even with progress resets */
+      maxTotalTimeout?: number;
+      /** Reset the timeout when progress notifications are received (default: false) */
+      resetTimeoutOnProgress?: boolean;
+      /** AbortSignal to cancel the request */
+      signal?: AbortSignal;
+    }
+  ) => Promise<any>;
   /**
    * Function to list resources from the MCP server.
    * @returns A promise that resolves when resources are refreshed.

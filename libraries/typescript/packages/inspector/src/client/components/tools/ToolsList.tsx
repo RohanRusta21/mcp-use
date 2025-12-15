@@ -1,4 +1,4 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import { Wrench } from "lucide-react";
 import { ListItem } from "@/client/components/shared";
 import { Badge } from "@/client/components/ui/badge";
@@ -26,7 +26,7 @@ export function ToolsList({
   }
 
   return (
-    <div className="overflow-y-auto flex-1 border-r dark:border-zinc-700 overscroll-contain">
+    <div className="overflow-y-auto flex-1 overscroll-contain">
       {tools.map((tool, index) => (
         <ListItem
           key={tool.name}

@@ -93,7 +93,12 @@ class ConnectionManager(Generic[T], ABC):
             logger.debug(f"Signaling stop to {self.__class__.__name__} task")
             self._stop_event.set()
             # Wait for it to finish gracefully
-            await self._task
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                logger.debug(f"{self.__class__.__name__} task cancelled during stop")
+            except Exception as e:
+                logger.warning(f"Error waiting for {self.__class__.__name__} task to stop: {e}")
 
         # Ensure cleanup completed
         await self._done_event.wait()
@@ -121,8 +126,13 @@ class ConnectionManager(Generic[T], ABC):
             # Signal that the connection is ready
             self._ready_event.set()
 
-            # Wait until stop is requested
-            await self._stop_event.wait()
+            try:
+                # Wait until stop is requested
+                await self._stop_event.wait()
+            except asyncio.CancelledError:
+                # just treat this as normal shutdown and fall through to finally
+                logger.debug(f"{self.__class__.__name__} task cancelled during stop")
+                return
 
         except Exception as e:
             # Store the exception

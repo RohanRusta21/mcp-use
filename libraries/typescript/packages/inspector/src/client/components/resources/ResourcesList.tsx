@@ -1,4 +1,4 @@
-import type { Resource } from "@modelcontextprotocol/sdk/types.js";
+import type { Resource } from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import {
   Database,
   File,
@@ -59,7 +59,7 @@ export function ResourcesList({
   }
 
   return (
-    <div className="overflow-y-auto flex-1 border-r dark:border-zinc-700 overscroll-contain">
+    <div className="overflow-y-auto flex-1 overscroll-contain">
       {resources.map((resource, index) => {
         const icon = getResourceIcon(resource.mimeType, resource.uri);
         const description = [

@@ -1,7 +1,3 @@
-import type { ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import { Spinner } from "@/client/components/ui/spinner";
 import { TooltipProvider } from "@/client/components/ui/tooltip";
 import { useInspector } from "@/client/context/InspectorContext";
@@ -10,9 +6,14 @@ import { useAutoConnect } from "@/client/hooks/useAutoConnect";
 import { useKeyboardShortcuts } from "@/client/hooks/useKeyboardShortcuts";
 import { useSavedRequests } from "@/client/hooks/useSavedRequests";
 import { MCPCommandPaletteOpenEvent, Telemetry } from "@/client/telemetry";
+import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { CommandPalette } from "./CommandPalette";
 import { LayoutContent } from "./LayoutContent";
 import { LayoutHeader } from "./LayoutHeader";
+import { ServerConnectionModal } from "./ServerConnectionModal";
 
 interface LayoutProps {
   children: ReactNode;
@@ -21,7 +22,13 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { connections, addConnection, removeConnection } = useMcpContext();
+  const {
+    connections,
+    addConnection,
+    removeConnection,
+    updateConnectionConfig,
+    configLoaded,
+  } = useMcpContext();
   const {
     selectedServerId,
     setSelectedServerId,
@@ -32,6 +39,9 @@ export function Layout({ children }: LayoutProps) {
   } = useInspector();
 
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [editingConnectionId, setEditingConnectionId] = useState<string | null>(
+    null
+  );
   const savedRequests = useSavedRequests();
 
   // Read tunnelUrl from query parameters and store in context
@@ -40,6 +50,73 @@ export function Layout({ children }: LayoutProps) {
     const tunnelUrl = urlParams.get("tunnelUrl");
     setTunnelUrl(tunnelUrl);
   }, [location.search, setTunnelUrl]);
+
+  // Listen for custom navigation events from toast (for sampling and elicitation requests)
+  useEffect(() => {
+    const handleNavigateToSampling = (event: globalThis.Event) => {
+      const customEvent = event as globalThis.CustomEvent<{
+        requestId: string;
+      }>;
+      const requestId = customEvent.detail.requestId;
+
+      // Switch to sampling tab and auto-select the request
+      if (selectedServerId) {
+        navigateToItem(selectedServerId, "sampling", requestId);
+      }
+    };
+
+    const handleNavigateToElicitation = (event: globalThis.Event) => {
+      const customEvent = event as globalThis.CustomEvent<{
+        requestId: string;
+      }>;
+      const requestId = customEvent.detail.requestId;
+
+      // Switch to elicitation tab and auto-select the request
+      if (selectedServerId) {
+        navigateToItem(selectedServerId, "elicitation", requestId);
+      }
+    };
+
+    const handleNavigateToToolResult = (event: globalThis.Event) => {
+      const customEvent = event as globalThis.CustomEvent<{
+        toolName: string | null;
+      }>;
+      const toolName = customEvent.detail.toolName;
+
+      // Switch to tools tab and auto-select the tool
+      if (selectedServerId && toolName) {
+        navigateToItem(selectedServerId, "tools", toolName);
+      } else if (selectedServerId) {
+        // If no toolName, just switch to tools tab
+        setActiveTab("tools");
+      }
+    };
+
+    window.addEventListener("navigate-to-sampling", handleNavigateToSampling);
+    window.addEventListener(
+      "navigate-to-elicitation",
+      handleNavigateToElicitation
+    );
+    window.addEventListener(
+      "navigate-to-tool-result",
+      handleNavigateToToolResult
+    );
+
+    return () => {
+      window.removeEventListener(
+        "navigate-to-sampling",
+        handleNavigateToSampling
+      );
+      window.removeEventListener(
+        "navigate-to-elicitation",
+        handleNavigateToElicitation
+      );
+      window.removeEventListener(
+        "navigate-to-tool-result",
+        handleNavigateToToolResult
+      );
+    };
+  }, [selectedServerId, setActiveTab, navigateToItem]);
 
   // Refs for search inputs in tabs
   const toolsSearchRef = useRef<{
@@ -60,6 +137,7 @@ export function Layout({ children }: LayoutProps) {
     connections,
     addConnection,
     removeConnection,
+    configLoaded,
   });
 
   // Track command palette open
@@ -95,6 +173,56 @@ export function Layout({ children }: LayoutProps) {
       : `/?server=${encodeURIComponent(serverId)}`;
     navigate(newUrl);
   };
+
+  const handleOpenConnectionOptions = useCallback(
+    (connectionId: string | null) => {
+      setEditingConnectionId(connectionId);
+    },
+    []
+  );
+
+  const handleUpdateConnection = useCallback(
+    (config: {
+      url: string;
+      name?: string;
+      transportType: "http" | "sse";
+      proxyConfig?: {
+        proxyAddress?: string;
+        customHeaders?: Record<string, string>;
+      };
+    }) => {
+      if (!editingConnectionId) return;
+
+      // If the URL changed, we need to remove the old one and add a new one
+      if (config.url !== editingConnectionId) {
+        removeConnection(editingConnectionId);
+        addConnection(
+          config.url,
+          config.name,
+          config.proxyConfig,
+          config.transportType
+        );
+      } else {
+        // Otherwise just update the existing connection
+        updateConnectionConfig(editingConnectionId, {
+          name: config.name,
+          proxyConfig: config.proxyConfig,
+          transportType: config.transportType,
+        });
+      }
+
+      // Close the modal
+      setEditingConnectionId(null);
+
+      toast.success("Connection settings updated");
+    },
+    [
+      editingConnectionId,
+      removeConnection,
+      addConnection,
+      updateConnectionConfig,
+    ]
+  );
 
   const handleCommandPaletteNavigate = (
     tab: "tools" | "prompts" | "resources",
@@ -299,7 +427,7 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <TooltipProvider>
-      <div className="h-screen bg-[#f3f3f3] dark:bg-black flex flex-col px-4 py-4 gap-4">
+      <div className="h-screen bg-[#f3f3f3] dark:bg-black flex flex-col px-2 py-2 sm:px-4 sm:py-4 gap-2 sm:gap-4">
         {/* Header */}
         <LayoutHeader
           connections={connections}
@@ -308,7 +436,7 @@ export function Layout({ children }: LayoutProps) {
           onServerSelect={handleServerSelect}
           onTabChange={setActiveTab}
           onCommandPaletteOpen={() => handleCommandPaletteOpen("button")}
-          onOpenConnectionOptions={() => {}}
+          onOpenConnectionOptions={handleOpenConnectionOptions}
         />
 
         {/* Main Content */}
@@ -338,6 +466,20 @@ export function Layout({ children }: LayoutProps) {
         />
 
         {/* Connection Options Dialog */}
+        <ServerConnectionModal
+          connection={
+            editingConnectionId
+              ? connections.find((c) => c.id === editingConnectionId) || null
+              : null
+          }
+          open={editingConnectionId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditingConnectionId(null);
+            }
+          }}
+          onConnect={handleUpdateConnection}
+        />
       </div>
     </TooltipProvider>
   );

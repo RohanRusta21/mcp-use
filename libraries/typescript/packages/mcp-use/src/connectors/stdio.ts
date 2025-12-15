@@ -1,9 +1,9 @@
-import type { StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { StdioServerParameters } from "@mcp-use/modelcontextprotocol-sdk/client/stdio.js";
 import type { Writable } from "node:stream";
 
 import type { ConnectorInitOptions } from "./base.js";
 import process from "node:process";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Client } from "@mcp-use/modelcontextprotocol-sdk/client/index.js";
 
 import { logger } from "../logging.js";
 import { StdioConnectionManager } from "../task_managers/stdio.js";
@@ -83,13 +83,38 @@ export class StdioConnector extends BaseConnector {
       const transport = await this.connectionManager.start();
 
       // 3. Create & connect the MCP client
-      this.client = new Client(this.clientInfo, this.opts.clientOptions);
+      // Always advertise roots capability - server may query roots/list even if client has no roots
+      const clientOptions = {
+        ...(this.opts.clientOptions || {}),
+        capabilities: {
+          ...(this.opts.clientOptions?.capabilities || {}),
+          roots: { listChanged: true }, // Always advertise roots capability
+          // Add sampling capability if callback is provided
+          ...(this.opts.samplingCallback ? { sampling: {} } : {}),
+          // Add elicitation capability if callback is provided
+          ...(this.opts.elicitationCallback
+            ? { elicitation: { form: {}, url: {} } }
+            : {}),
+        },
+      };
+      this.client = new Client(this.clientInfo, clientOptions);
       await this.client.connect(transport);
 
       this.connected = true;
+      this.setupNotificationHandler();
+      this.setupRootsHandler();
+      this.setupSamplingHandler();
+      this.setupElicitationHandler();
       logger.debug(
         `Successfully connected to MCP implementation: ${this.command}`
       );
+
+      // Track connector initialization
+      this.trackConnectorInit({
+        serverCommand: this.command,
+        serverArgs: this.args,
+        publicIdentifier: `${this.command} ${this.args.join(" ")}`,
+      });
     } catch (err) {
       logger.error(`Failed to connect to MCP implementation: ${err}`);
       await this.cleanupResources();

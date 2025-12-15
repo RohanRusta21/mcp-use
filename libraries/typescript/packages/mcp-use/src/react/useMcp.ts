@@ -4,17 +4,17 @@ import type {
   Resource,
   ResourceTemplate,
   Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@mcp-use/modelcontextprotocol-sdk/types.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { sanitizeUrl } from "strict-url-sanitise";
+import { sanitizeUrl } from "../utils/url-sanitize.js";
 import { BrowserMCPClient } from "../client/browser.js";
 import { BrowserOAuthClientProvider } from "../auth/browser-provider.js";
+import { Tel } from "../telemetry/index.js";
 import { assert } from "../utils/assert.js";
 import type { UseMcpOptions, UseMcpResult } from "./types.js";
 
 const DEFAULT_RECONNECT_DELAY = 3000;
 const DEFAULT_RETRY_DELAY = 5000;
-const AUTH_TIMEOUT = 5 * 60 * 1000;
 
 // Define Transport types literal for clarity
 type TransportType = "http" | "sse";
@@ -68,10 +68,15 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
     autoRetry = false,
     autoReconnect = DEFAULT_RECONNECT_DELAY,
     transportType = "auto",
-    preventAutoAuth = false,
+    preventAutoAuth = false, // Default to false for backward compatibility (auto-trigger OAuth)
+    useRedirectFlow = false, // Default to false for backward compatibility (use popup)
     onPopupWindow,
     timeout = 30000, // 30 seconds default for connection timeout
     sseReadTimeout = 300000, // 5 minutes default for SSE read timeout
+    wrapTransport,
+    onNotification,
+    samplingCallback,
+    onElicitation,
   } = options;
 
   const [state, setState] = useState<UseMcpResult["state"]>("discovering");
@@ -81,6 +86,11 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
     ResourceTemplate[]
   >([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [serverInfo, setServerInfo] = useState<{
+    name: string;
+    version?: string;
+  }>();
+  const [capabilities, setCapabilities] = useState<Record<string, any>>();
   const [error, setError] = useState<string | undefined>(undefined);
   const [log, setLog] = useState<UseMcpResult["log"]>([]);
   const [authUrl, setAuthUrl] = useState<string | undefined>(undefined);
@@ -187,8 +197,23 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         }
       }
       connectingRef.current = false;
+
+      // Track failed connection
+      if (url) {
+        Tel.getInstance()
+          .trackUseMcpConnection({
+            url,
+            transportType: transportType,
+            success: false,
+            errorType: connectionError?.name || "UnknownError",
+            hasOAuth: !!authProviderRef.current,
+            hasSampling: !!samplingCallback,
+            hasElicitation: !!onElicitation,
+          })
+          .catch(() => {});
+      }
     },
-    [addLog]
+    [addLog, url, transportType, samplingCallback, onElicitation]
   );
 
   /**
@@ -235,6 +260,7 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         clientUri,
         callbackUrl,
         preventAutoAuth,
+        useRedirectFlow,
         onPopupWindow,
       });
       addLog("debug", "BrowserOAuthClientProvider initialized in connect.");
@@ -279,20 +305,69 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         }
 
         // Add server to client with OAuth provider
+        // Include wrapTransport if provided
+        // Pass clientConfig as clientOptions so connector can set up capabilities
         clientRef.current!.addServer(serverName, {
           ...serverConfig,
           authProvider: authProviderRef.current, // ← SDK handles OAuth automatically!
+          clientOptions: clientConfig, // ← Pass client config to connector
+          samplingCallback: samplingCallback, // ← Pass sampling callback to connector
+          elicitationCallback: onElicitation, // ← Pass elicitation callback to connector
+          wrapTransport: wrapTransport
+            ? (transport: any) => {
+                console.log(
+                  "[useMcp] Applying transport wrapper for server:",
+                  serverName,
+                  "url:",
+                  url
+                );
+                return wrapTransport(transport, url);
+              }
+            : undefined,
         });
 
-        // Create session (this connects to server)
-        const session = await clientRef.current!.createSession(serverName);
+        // Create session WITHOUT auto-initialization
+        // This allows us to register the notification handler BEFORE connecting
+        const session = await clientRef.current!.createSession(
+          serverName,
+          false
+        );
 
-        // Initialize session (caches tools, resources, prompts)
+        // Wire up notification handler BEFORE initializing
+        // This ensures the handler is registered before setupNotificationHandler() is called during connect()
+        if (onNotification) {
+          session.on("notification", onNotification);
+        }
+
+        // Now initialize the session (this connects to server and caches tools, resources, prompts)
         await session.initialize();
 
         addLog("info", "✅ Successfully connected to MCP server");
+        addLog("info", "Server info:", session.connector.serverInfo);
+        addLog(
+          "info",
+          "Server capabilities:",
+          session.connector.serverCapabilities
+        );
+        console.log("[useMcp] Server info:", session.connector.serverInfo);
+        console.log(
+          "[useMcp] Server capabilities:",
+          session.connector.serverCapabilities
+        );
         setState("ready");
         successfulTransportRef.current = transportTypeParam;
+
+        // Track successful connection
+        Tel.getInstance()
+          .trackUseMcpConnection({
+            url,
+            transportType: transportTypeParam,
+            success: true,
+            hasOAuth: !!authProviderRef.current,
+            hasSampling: !!samplingCallback,
+            hasElicitation: !!onElicitation,
+          })
+          .catch(() => {});
 
         // Get tools, resources, prompts from session connector
         setTools(session.connector.tools || []);
@@ -301,17 +376,82 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         const promptsResult = await session.connector.listPrompts();
         setPrompts(promptsResult.prompts || []);
 
+        // Get serverInfo and capabilities from the connector (populated during initialize)
+        const serverInfo = session.connector.serverInfo;
+        const capabilities = session.connector.serverCapabilities;
+
+        if (serverInfo) {
+          console.log("[useMcp] Server info:", serverInfo);
+          setServerInfo(serverInfo);
+        }
+
+        if (capabilities) {
+          console.log("[useMcp] Server capabilities:", capabilities);
+          setCapabilities(capabilities);
+        }
+
         return "success";
-      } catch (err: any) {
-        const errorMessage = err?.message || String(err);
+      } catch (err: unknown) {
+        const error = err as Error & { code?: number; message?: string };
+        const errorMessage = error?.message || String(err);
 
         // Handle 401 errors
-        // Note: OAuth is handled automatically by the SDK's authProvider if configured
         if (
-          err.code === 401 ||
+          error.code === 401 ||
           errorMessage.includes("401") ||
           errorMessage.includes("Unauthorized")
         ) {
+          // Check if OAuth provider is configured
+          if (authProviderRef.current) {
+            // OAuth is configured - enter pending_auth state
+            addLog(
+              "info",
+              "Authentication required. OAuth provider available."
+            );
+
+            // Generate auth URL manually since SDK didn't trigger it
+            // This happens because 401 occurs before OAuth flow starts
+            try {
+              const { auth } =
+                await import("@mcp-use/modelcontextprotocol-sdk/client/auth.js");
+              const baseUrl = new URL(url).origin;
+
+              // Trigger auth to generate the URL, but it will be blocked by preventAutoAuth
+              // This ensures the URL gets prepared and stored
+              auth(authProviderRef.current, { serverUrl: baseUrl }).catch(
+                () => {
+                  // Expected to fail/stop - we just want the URL prepared
+                }
+              );
+
+              // Give it a moment to prepare the URL
+              setTimeout(() => {
+                if (isMountedRef.current) {
+                  const manualUrl =
+                    authProviderRef.current?.getLastAttemptedAuthUrl();
+                  if (manualUrl) {
+                    setAuthUrl(manualUrl);
+                    addLog(
+                      "info",
+                      "Manual authentication URL available:",
+                      manualUrl
+                    );
+                  } else {
+                    addLog("warn", "Could not generate authentication URL");
+                  }
+                }
+              }, 100);
+            } catch (authGenError) {
+              addLog("warn", "Error generating auth URL:", authGenError);
+            }
+
+            if (isMountedRef.current) {
+              setState("pending_auth");
+            }
+            connectingRef.current = false;
+            return "auth_redirect";
+          }
+
           // Check if custom headers were provided (invalid credentials)
           if (customHeaders && Object.keys(customHeaders).length > 0) {
             failConnection(
@@ -321,7 +461,7 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
             return "failed";
           }
 
-          // No custom headers - suggest adding them
+          // No OAuth and no custom headers - suggest adding them
           failConnection(
             "Authentication required: Server returned 401 Unauthorized. " +
               "Add an Authorization header in the Custom Headers section " +
@@ -331,7 +471,10 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         }
 
         // Handle other errors
-        failConnection(errorMessage, err);
+        failConnection(
+          errorMessage,
+          error instanceof Error ? error : new Error(String(error))
+        );
         return "failed";
       }
     };
@@ -387,6 +530,7 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
     customHeaders,
     transportType,
     preventAutoAuth,
+    useRedirectFlow,
     onPopupWindow,
     enabled,
     timeout,
@@ -398,37 +542,80 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
    *
    * @param name - Name of the tool to call
    * @param args - Arguments to pass to the tool
+   * @param options - Optional request options for timeout configuration
    * @returns Tool execution result
    * @throws {Error} If client is not ready or tool call fails
    *
    * @example
    * ```typescript
+   * // Simple tool call
    * const result = await mcp.callTool('send-email', {
    *   to: 'user@example.com',
    *   subject: 'Hello',
    *   body: 'Test message'
    * })
+   *
+   * // Tool call with extended timeout (e.g., for tools that trigger sampling)
+   * const result = await mcp.callTool('analyze-sentiment', { text: 'Hello' }, {
+   *   timeout: 300000, // 5 minutes
+   *   resetTimeoutOnProgress: true
+   * })
    * ```
    */
   const callTool = useCallback(
-    async (name: string, args?: Record<string, unknown>) => {
+    async (
+      name: string,
+      args?: Record<string, unknown>,
+      options?: {
+        timeout?: number;
+        maxTotalTimeout?: number;
+        resetTimeoutOnProgress?: boolean;
+        signal?: AbortSignal;
+      }
+    ) => {
       if (stateRef.current !== "ready" || !clientRef.current) {
         throw new Error(
           `MCP client is not ready (current state: ${state}). Cannot call tool "${name}".`
         );
       }
       addLog("info", `Calling tool: ${name}`, args);
+      const startTime = Date.now();
       try {
         const serverName = "inspector-server";
         const session = clientRef.current.getSession(serverName);
         if (!session) {
           throw new Error("No active session found");
         }
-        const result = await session.connector.callTool(name, args || {});
+        const result = await session.connector.callTool(
+          name,
+          args || {},
+          options
+        );
         addLog("info", `Tool "${name}" call successful:`, result);
+
+        // Track successful tool call
+        Tel.getInstance()
+          .trackUseMcpToolCall({
+            toolName: name,
+            success: true,
+            executionTimeMs: Date.now() - startTime,
+          })
+          .catch(() => {});
+
         return result;
       } catch (err) {
         addLog("error", `Tool "${name}" call failed:`, err);
+
+        // Track failed tool call
+        Tel.getInstance()
+          .trackUseMcpToolCall({
+            toolName: name,
+            success: false,
+            errorType: err instanceof Error ? err.name : "UnknownError",
+            executionTimeMs: Date.now() - startTime,
+          })
+          .catch(() => {});
+
         throw err;
       }
     },
@@ -473,16 +660,6 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
       retry();
     } else if (currentState === "pending_auth") {
       addLog("info", "Proceeding with authentication from pending state...");
-      setState("authenticating");
-      if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
-      authTimeoutRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          const currentStateValue = stateRef.current;
-          if (currentStateValue === "authenticating") {
-            failConnection("Authentication timed out. Please try again.");
-          }
-        }
-      }, AUTH_TIMEOUT) as any;
 
       try {
         assert(
@@ -490,18 +667,68 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
           "Auth Provider not available for manual auth"
         );
         assert(url, "Server URL is required for authentication");
-        // OAuth handled via popup - just trigger reconnect after auth completes
-        // The auth callback will handle reconnection
-        addLog(
-          "info",
-          "Redirecting for manual authentication. Waiting for callback..."
-        );
+
+        // Clear ALL stale OAuth state from previous attempts
+        addLog("info", "Clearing all OAuth state and initiating fresh flow...");
+
+        // Clear all OAuth-related keys for this server
+        const hashPrefix = `${storageKeyPrefix}:${authProviderRef.current.serverUrlHash}`;
+        Object.keys(localStorage).forEach((key) => {
+          // Remove all keys for this server's hash
+          if (key.startsWith(hashPrefix)) {
+            addLog("debug", `Removing stale OAuth key: ${key}`);
+            localStorage.removeItem(key);
+          }
+          // Also remove any orphaned state parameters
+          if (key.startsWith(`${storageKeyPrefix}:state_`)) {
+            addLog("debug", `Removing orphaned state: ${key}`);
+            localStorage.removeItem(key);
+          }
+        });
+
+        // Update state to authenticating before redirect
+        setState("authenticating");
+
+        // Recreate the auth provider WITHOUT preventAutoAuth
+        const freshAuthProvider = new BrowserOAuthClientProvider(url, {
+          storageKeyPrefix,
+          clientName,
+          clientUri,
+          callbackUrl,
+          preventAutoAuth: false, // ← Allow OAuth to proceed
+          useRedirectFlow,
+          onPopupWindow,
+        });
+
+        // Replace the auth provider
+        authProviderRef.current = freshAuthProvider;
+
+        addLog("info", "Triggering fresh OAuth authorization...");
+
+        // Generate a fresh authorization URL and redirect immediately
+        // We need to manually trigger what the SDK would do
+        const { auth } =
+          await import("@mcp-use/modelcontextprotocol-sdk/client/auth.js");
+
+        // This will trigger the OAuth flow with the new provider
+        // The provider will redirect/popup automatically since preventAutoAuth is false
+        const baseUrl = new URL(url).origin;
+        auth(freshAuthProvider, {
+          serverUrl: baseUrl,
+        }).catch((err: unknown) => {
+          // This is expected to "fail" with redirect - the auth flow continues in the popup/redirect
+          addLog(
+            "info",
+            "OAuth flow initiated:",
+            err instanceof Error ? err.message : "Redirecting..."
+          );
+        });
       } catch (authError) {
         if (!isMountedRef.current) return;
-        if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
-        failConnection(
-          `Manual authentication failed: ${authError instanceof Error ? authError.message : String(authError)}`,
-          authError instanceof Error ? authError : undefined
+        setState("pending_auth"); // Go back to pending state on error
+        addLog(
+          "error",
+          `Manual authentication failed: ${authError instanceof Error ? authError.message : String(authError)}`
         );
       }
     } else if (currentState === "authenticating") {
@@ -520,7 +747,18 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         `Client not in a state requiring manual authentication trigger (state: ${currentState}). If needed, try disconnecting and reconnecting.`
       );
     }
-  }, [addLog, retry, authUrl, url, failConnection, connect]);
+  }, [
+    addLog,
+    retry,
+    authUrl,
+    url,
+    useRedirectFlow,
+    onPopupWindow,
+    storageKeyPrefix,
+    clientName,
+    clientUri,
+    callbackUrl,
+  ]);
 
   /**
    * Clear OAuth tokens from localStorage and disconnect
@@ -608,9 +846,28 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         }
         const result = await session.connector.readResource(uri);
         addLog("info", "Resource read successful:", result);
+
+        // Track successful resource read
+        Tel.getInstance()
+          .trackUseMcpResourceRead({
+            resourceUri: uri,
+            success: true,
+          })
+          .catch(() => {});
+
         return result;
       } catch (err) {
         addLog("error", "Resource read failed:", err);
+
+        // Track failed resource read
+        Tel.getInstance()
+          .trackUseMcpResourceRead({
+            resourceUri: uri,
+            success: false,
+            errorType: err instanceof Error ? err.name : "UnknownError",
+          })
+          .catch(() => {});
+
         throw err;
       }
     },
@@ -798,6 +1055,7 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
         clientUri,
         callbackUrl,
         preventAutoAuth,
+        useRedirectFlow,
         onPopupWindow,
       });
       addLog(
@@ -820,6 +1078,7 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
     clientUri,
     clientConfig.name,
     clientConfig.version,
+    useRedirectFlow,
   ]);
 
   /**
@@ -851,6 +1110,8 @@ export function useMcp(options: UseMcpOptions): UseMcpResult {
     resources,
     resourceTemplates,
     prompts,
+    serverInfo,
+    capabilities,
     error,
     log,
     authUrl,

@@ -1,11 +1,11 @@
-import type { CustomHeader } from "./CustomHeadersEditor";
-import { CircleMinus, Copy, Loader2, RotateCcw } from "lucide-react";
-import { useMcp } from "mcp-use/react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import { Badge } from "@/client/components/ui/badge";
 import { Button } from "@/client/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/client/components/ui/dropdown-menu";
 import { Label } from "@/client/components/ui/label";
 import { NotFound } from "@/client/components/ui/not-found";
 import { RandomGradientBackground } from "@/client/components/ui/random-gradient-background";
@@ -17,7 +17,22 @@ import {
 } from "@/client/components/ui/tooltip";
 import { useMcpContext } from "@/client/context/McpContext";
 import { MCPServerAddedEvent, Telemetry } from "@/client/telemetry";
+import {
+  CircleMinus,
+  Copy,
+  Loader2,
+  MoreVertical,
+  RotateCcw,
+  Settings,
+} from "lucide-react";
+import { useMcp } from "mcp-use/react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { ConnectionSettingsForm } from "./ConnectionSettingsForm";
+import type { CustomHeader } from "./CustomHeadersEditor";
+import { ServerConnectionModal } from "./ServerConnectionModal";
+import { ServerIcon } from "./ServerIcon";
 
 // Temporary connection tester component
 function ConnectionTester({
@@ -43,28 +58,44 @@ function ConnectionTester({
       ? new URL("/inspector/oauth/callback", window.location.origin).toString()
       : "/inspector/oauth/callback";
 
-  // Apply proxy configuration
+  // Validate and apply proxy configuration
   let finalUrl = config.url;
   let customHeaders: Record<string, string> = {};
+  let urlError: string | null = null;
 
-  if (config.proxyConfig?.proxyAddress) {
-    const proxyUrl = new URL(config.proxyConfig.proxyAddress);
-    const originalUrl = new URL(config.url);
-    finalUrl = `${proxyUrl.origin}${proxyUrl.pathname}${originalUrl.pathname}${originalUrl.search}`;
+  try {
+    if (config.proxyConfig?.proxyAddress) {
+      const proxyUrl = new URL(config.proxyConfig.proxyAddress);
+      const originalUrl = new URL(config.url);
+      finalUrl = `${proxyUrl.origin}${proxyUrl.pathname}${originalUrl.pathname}${originalUrl.search}`;
 
-    customHeaders["X-Target-URL"] = config.url;
+      customHeaders["X-Target-URL"] = config.url;
+    } else {
+      // Validate the URL even if not using proxy
+      new URL(config.url);
+    }
+  } catch (err) {
+    urlError = `Invalid URL format. Please include the protocol (http:// or https://).\nExample: https://${config.url}`;
   }
 
   if (config.proxyConfig?.customHeaders) {
     customHeaders = { ...customHeaders, ...config.proxyConfig.customHeaders };
   }
 
+  // Show error immediately if URL is invalid
+  useEffect(() => {
+    if (urlError) {
+      onFailure(urlError);
+    }
+  }, [urlError, onFailure]);
+
   const mcpHook = useMcp({
-    url: finalUrl,
+    url: urlError ? undefined : finalUrl, // Don't connect if URL is invalid
     callbackUrl,
     customHeaders:
       Object.keys(customHeaders).length > 0 ? customHeaders : undefined,
     transportType: config.transportType || "http",
+    enabled: !urlError, // Disable connection if URL is invalid
   });
 
   const hasCalledRef = useRef(false);
@@ -111,6 +142,7 @@ export function InspectorDashboard() {
     connections,
     addConnection,
     removeConnection,
+    updateConnectionConfig,
     autoConnect,
     setAutoConnect,
     connectServer,
@@ -122,6 +154,9 @@ export function InspectorDashboard() {
     new Set()
   );
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(
+    null
+  );
+  const [editingConnectionId, setEditingConnectionId] = useState<string | null>(
     null
   );
 
@@ -190,6 +225,28 @@ export function InspectorDashboard() {
   const handleAddConnection = useCallback(
     (isRetry = false, overrideConnectionType?: string) => {
       if (!url.trim()) return;
+
+      // Validate URL format before attempting connection
+      if (!isRetry) {
+        try {
+          const parsedUrl = new URL(url.trim());
+          const isValid =
+            parsedUrl.protocol === "http:" ||
+            parsedUrl.protocol === "https:" ||
+            parsedUrl.protocol === "ws:" ||
+            parsedUrl.protocol === "wss:";
+
+          if (!isValid) {
+            toast.error(
+              "Invalid URL protocol. Please use http://, https://, ws://, or wss://"
+            );
+            return;
+          }
+        } catch (error) {
+          toast.error("Invalid URL format. Please enter a valid URL.");
+          return;
+        }
+      }
 
       setIsConnecting(true);
       hasShownToastRef.current = false;
@@ -379,6 +436,49 @@ export function InspectorDashboard() {
     action();
   };
 
+  const handleUpdateConnection = useCallback(
+    (config: {
+      url: string;
+      name?: string;
+      transportType: "http" | "sse";
+      proxyConfig?: {
+        proxyAddress?: string;
+        customHeaders?: Record<string, string>;
+      };
+    }) => {
+      if (!editingConnectionId) return;
+
+      // If the URL changed, we need to remove the old one and add a new one
+      if (config.url !== editingConnectionId) {
+        removeConnection(editingConnectionId);
+        addConnection(
+          config.url,
+          config.name,
+          config.proxyConfig,
+          config.transportType
+        );
+      } else {
+        // Otherwise just update the existing connection
+        updateConnectionConfig(editingConnectionId, {
+          name: config.name,
+          proxyConfig: config.proxyConfig,
+          transportType: config.transportType,
+        });
+      }
+
+      // Close the modal
+      setEditingConnectionId(null);
+
+      toast.success("Connection settings updated");
+    },
+    [
+      editingConnectionId,
+      removeConnection,
+      addConnection,
+      updateConnectionConfig,
+    ]
+  );
+
   const handleServerClick = (connection: any) => {
     // If disconnected, connect the server
     if (connection.state === "disconnected") {
@@ -462,17 +562,16 @@ export function InspectorDashboard() {
   }, [connections, pendingNavigation, navigate]);
 
   return (
-    <div className="flex items-start justify-start gap-4 h-full relative">
-      <div className="w-full px-6 pt-6 overflow-auto">
-        <div className="flex items-center gap-3 relative z-10">
-          <h2 className="text-2xl font-medium tracking-tight">MCP Inspector</h2>
+    <div className="flex flex-col lg:flex-row items-start justify-start gap-4 h-auto lg:h-full relative">
+      <div className="w-full px-3 pt-6 sm:px-6 sm:pt-3 overflow-visible lg:overflow-auto">
+        <div className="flex mb-3 md:mb-0 flex-col sm:flex-row items-center sm:items-center gap-3 relative z-10">
           <Tooltip>
             <TooltipTrigger asChild>
               <a
                 href="https://github.com/mcp-use/mcp-use"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-block"
+                className="inline-block order-1 sm:order-2"
               >
                 <Badge
                   variant="secondary"
@@ -489,15 +588,20 @@ export function InspectorDashboard() {
               <p>Visit GitHub</p>
             </TooltipContent>
           </Tooltip>
+          <h2 className="text-2xl font-medium tracking-tight text-center sm:text-left order-2 sm:order-1">
+            MCP Inspector
+          </h2>
         </div>
-        <p className="text-muted-foreground relative z-10">
+        <p className="text-muted-foreground relative z-10 text-center sm:text-left">
           Inspect and debug MCP (Model Context Protocol) servers
         </p>
 
-        <div className="space-y-4 mt-8">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-medium">Connected Servers</h3>
-            <div className="flex items-center gap-3">
+        <div className="space-y-4 mt-4 sm:mt-8">
+          <div className="flex flex-col sm:flex-row items-center sm:items-center justify-between gap-3">
+            <h3 className="hidden sm:block text-base font-medium text-center sm:text-left">
+              Connected Servers
+            </h3>
+            <div className="hidden sm:flex items-center gap-3 justify-center sm:justify-start">
               <div className="flex items-center gap-2">
                 <Label
                   htmlFor="auto-connect"
@@ -532,9 +636,14 @@ export function InspectorDashboard() {
                   onClick={() => handleServerClick(connection)}
                   className="group rounded-lg bg-zinc-100 dark:bg-white/10 hover:bg-zinc-200 dark:hover:bg-white/15 p-4 transition-colors cursor-pointer"
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3">
+                        <ServerIcon
+                          serverUrl={connection.url}
+                          serverName={connection.name}
+                          size="md"
+                        />
                         <h4 className="font-semibold text-sm">
                           {connection.name}
                         </h4>
@@ -600,7 +709,8 @@ export function InspectorDashboard() {
                         </Tooltip>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1">
+                    {/* Desktop: Show all action buttons */}
+                    <div className="hidden lg:flex items-center gap-1 flex-shrink-0">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button
@@ -618,6 +728,25 @@ export function InspectorDashboard() {
                         </TooltipTrigger>
                         <TooltipContent>
                           <p>Copy connection config</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={(e) =>
+                              handleActionClick(e, () =>
+                                setEditingConnectionId(connection.id)
+                              )
+                            }
+                            className="h-8 w-8 p-0"
+                          >
+                            <Settings className="w-4 h-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Edit connection settings</p>
                         </TooltipContent>
                       </Tooltip>
                       <Tooltip>
@@ -659,28 +788,102 @@ export function InspectorDashboard() {
                         </Tooltip>
                       )}
                     </div>
+                    {/* Mobile: Show 3-dots overflow menu */}
+                    <div className="lg:hidden flex-shrink-0">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCopyConnectionConfig(connection);
+                            }}
+                          >
+                            <Copy className="h-4 w-4 mr-2" />
+                            Copy connection config
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingConnectionId(connection.id);
+                            }}
+                          >
+                            <Settings className="h-4 w-4 mr-2" />
+                            Edit connection settings
+                          </DropdownMenuItem>
+                          {connection.state !== "disconnected" && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                connection.retry();
+                              }}
+                            >
+                              <RotateCcw className="h-4 w-4 mr-2" />
+                              Resync connection
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeConnection(connection.id);
+                            }}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <CircleMinus className="h-4 w-4 mr-2" />
+                            Remove connection
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </div>
-                  {connection.state === "pending_auth" &&
-                    connection.authUrl && (
-                      <div className="text-sm text-yellow-600 dark:text-yellow-400 mt-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={connection.authenticate}
-                        >
-                          Authenticate
-                        </Button>{" "}
-                        or{" "}
-                        <a
-                          href={connection.authUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline"
-                        >
-                          open auth page
-                        </a>
-                      </div>
-                    )}
+                  {(connection.state === "pending_auth" ||
+                    connection.state === "authenticating") && (
+                    <div className="text-sm text-yellow-600 dark:text-yellow-400 mt-2">
+                      <Button
+                        size="sm"
+                        className="bg-yellow-500/20 border-0 dark:bg-yellow-400/10 text-yellow-800 dark:text-yellow-500"
+                        variant="outline"
+                        onClick={(e) =>
+                          handleActionClick(e, connection.authenticate)
+                        }
+                        disabled={connection.state === "authenticating"}
+                      >
+                        {connection.state === "authenticating" ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Authenticating...
+                          </>
+                        ) : (
+                          "Authenticate"
+                        )}
+                      </Button>
+                      {connection.authUrl &&
+                        connection.state === "pending_auth" && (
+                          <>
+                            {" "}
+                            or{" "}
+                            <a
+                              href={connection.authUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              open auth page
+                            </a>
+                          </>
+                        )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -688,8 +891,8 @@ export function InspectorDashboard() {
         </div>
       </div>
 
-      <div className="w-full relative overflow-hidden h-full p-10 items-center justify-center flex">
-        <div className="relative w-full max-w-xl mx-auto z-10 flex flex-col gap-3 rounded-3xl p-6 bg-black/70 dark:bg-black/90 shadow-2xl shadow-black/50 backdrop-blur-md">
+      <div className="w-full relative overflow-hidden h-auto lg:h-full py-4 px-4 sm:py-6 sm:px-6 lg:p-10 items-center justify-center flex">
+        <div className="relative w-full max-w-xl mx-auto z-10 flex flex-col gap-3 rounded-3xl p-4 sm:p-6 bg-black/70 dark:bg-black/90 shadow-2xl shadow-black/50 backdrop-blur-md">
           <ConnectionSettingsForm
             transportType={transportType}
             setTransportType={setTransportType}
@@ -734,6 +937,22 @@ export function InspectorDashboard() {
           onFailure={handleConnectionFailure}
         />
       )}
+
+      {/* Connection Options Dialog */}
+      <ServerConnectionModal
+        connection={
+          editingConnectionId
+            ? connections.find((c) => c.id === editingConnectionId) || null
+            : null
+        }
+        open={editingConnectionId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingConnectionId(null);
+          }
+        }}
+        onConnect={handleUpdateConnection}
+      />
     </div>
   );
 }

@@ -15,17 +15,21 @@ from mcp.types import (
     ReadResourceRequestParams,
     Resource,
 )
+from mcp.types import (
+    Tool as MCPTool,
+)
 from pydantic import BaseModel, Field, create_model
 
 from mcp_use.agents.adapters.base import BaseAdapter
 from mcp_use.client.connectors.base import BaseConnector
 from mcp_use.errors.error_formatting import format_error
 from mcp_use.logging import logger
-from mcp_use.telemetry.telemetry import telemetry
 
 
-class LangChainAdapter(BaseAdapter):
+class LangChainAdapter(BaseAdapter[BaseTool]):
     """Adapter for converting MCP tools to LangChain tools."""
+
+    framework: str = "langchain"
 
     def __init__(self, disallowed_tools: list[str] | None = None) -> None:
         """Initialize a new LangChain adapter.
@@ -33,7 +37,7 @@ class LangChainAdapter(BaseAdapter):
         Args:
             disallowed_tools: list of tool names that should not be available.
         """
-        super().__init__(disallowed_tools)
+        super().__init__(disallowed_tools=disallowed_tools)
         self._connector_tool_map: dict[BaseConnector, list[BaseTool]] = {}
         self._connector_resource_map: dict[BaseConnector, list[BaseTool]] = {}
         self._connector_prompt_map: dict[BaseConnector, list[BaseTool]] = {}
@@ -42,8 +46,7 @@ class LangChainAdapter(BaseAdapter):
         self.resources: list[BaseTool] = []
         self.prompts: list[BaseTool] = []
 
-    @telemetry("adapter_convert_tool")
-    def _convert_tool(self, mcp_tool: dict[str, Any], connector: BaseConnector) -> BaseTool:
+    def _convert_tool(self, mcp_tool: MCPTool, connector: BaseConnector) -> BaseTool | None:
         """Convert an MCP tool to LangChain's tool format.
 
         Args:
@@ -190,7 +193,7 @@ class LangChainAdapter(BaseAdapter):
 
         class PromptTool(BaseTool):
             name: str = mcp_prompt.name
-            description: str = mcp_prompt.description
+            description: str | None = mcp_prompt.description
 
             args_schema: type[BaseModel] = InputSchema
             tool_connector: BaseConnector = connector

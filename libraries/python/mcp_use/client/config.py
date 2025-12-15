@@ -16,6 +16,9 @@ from mcp_use.client.connectors.stdio import StdioConnector
 from mcp_use.client.connectors.utils import is_stdio_server
 from mcp_use.client.connectors.websocket import WebSocketConnector
 from mcp_use.client.middleware import Middleware
+from mcp_use.telemetry.telemetry import Telemetry
+
+_telemetry = Telemetry()
 
 
 def load_config_file(filepath: str) -> dict[str, Any]:
@@ -40,6 +43,7 @@ def create_connector_from_config(
     message_handler: MessageHandlerFnT | None = None,
     logging_callback: LoggingFnT | None = None,
     middleware: list[Middleware] | None = None,
+    verify: bool | None = True,
 ) -> BaseConnector:
     """Create a connector based on server configuration.
     This function can be called with just the server_config parameter:
@@ -55,6 +59,12 @@ def create_connector_from_config(
 
     # Stdio connector (command-based)
     if is_stdio_server(server_config) and not sandbox:
+        _telemetry.track_connector_init(
+            connector_type="stdio",
+            server_command=server_config["command"],
+            server_args=server_config["args"],
+            public_identifier=f"stdio:{server_config['command']} {' '.join(server_config['args'])}",
+        )
         return StdioConnector(
             command=server_config["command"],
             args=server_config["args"],
@@ -68,6 +78,12 @@ def create_connector_from_config(
 
     # Sandboxed connector
     elif is_stdio_server(server_config) and sandbox:
+        _telemetry.track_connector_init(
+            connector_type="sandbox",
+            server_command=server_config["command"],
+            server_args=server_config["args"],
+            public_identifier=f"sandbox:{server_config['command']} {' '.join(server_config['args'])}",
+        )
         return SandboxConnector(
             command=server_config["command"],
             args=server_config["args"],
@@ -82,6 +98,11 @@ def create_connector_from_config(
 
     # HTTP connector
     elif "url" in server_config:
+        _telemetry.track_connector_init(
+            connector_type="http",
+            server_url=server_config["url"],
+            public_identifier=f"http:{server_config['url']}",
+        )
         return HttpConnector(
             base_url=server_config["url"],
             headers=server_config.get("headers", None),
@@ -93,10 +114,16 @@ def create_connector_from_config(
             message_handler=message_handler,
             logging_callback=logging_callback,
             middleware=middleware,
+            verify=verify,
         )
 
     # WebSocket connector
     elif "ws_url" in server_config:
+        _telemetry.track_connector_init(
+            connector_type="websocket",
+            server_url=server_config["ws_url"],
+            public_identifier=f"websocket:{server_config['ws_url']}",
+        )
         return WebSocketConnector(
             url=server_config["ws_url"],
             headers=server_config.get("headers", None),

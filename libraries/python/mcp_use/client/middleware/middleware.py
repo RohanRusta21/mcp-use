@@ -34,6 +34,7 @@ from mcp.types import (
     ReadResourceRequestParams,
     ReadResourceResult,
 )
+from pydantic import AnyUrl
 
 from mcp_use.telemetry.telemetry import telemetry
 
@@ -66,7 +67,7 @@ class MCPResponseContext:
     jsonrpc_response: JSONRPCResponse | None = None
 
     @classmethod
-    def create(cls, request_id: str, result: Any = None, error: Exception = None) -> "MCPResponseContext":
+    def create(cls, request_id: str, result: Any = None, error: Exception | None = None) -> "MCPResponseContext":
         return cls(request_id=request_id, result=result, error=error, duration=0.0, metadata={})
 
 
@@ -154,6 +155,7 @@ class MiddlewareManager:
 
     def __init__(self):
         self.middlewares: list[Middleware] = []
+        self._record_telemetry = True
 
     @telemetry("middleware_add")
     def add_middleware(self, callback: Middleware) -> None:
@@ -161,7 +163,9 @@ class MiddlewareManager:
         self.middlewares.append(callback)
 
     @telemetry("middleware_process_request")
-    async def process_request(self, context: MiddlewareContext, original_call: Callable) -> MCPResponseContext:
+    async def process_request(
+        self, context: MiddlewareContext, original_call: Callable[[MiddlewareContext], Any]
+    ) -> MCPResponseContext:
         """
         Runs the full middleware chain, captures timing and errors,
         and returns a structured MCPResponseContext.
@@ -169,8 +173,8 @@ class MiddlewareManager:
 
         try:
             # Chain middleware callbacks
-            async def execute_call(_: MiddlewareContext) -> Any:
-                return await original_call()
+            async def execute_call(ctx: MiddlewareContext) -> Any:
+                return await original_call(ctx)
 
             call_chain = execute_call
             for middleware in reversed(self.middlewares):
@@ -227,38 +231,44 @@ class CallbackClientSession:
 
     # Wrap all MCP methods with specific params
     async def initialize(self, *args, **kwargs) -> InitializeResult:
-        return await self._intercept_call("initialize", None, lambda: self._client_session.initialize(*args, **kwargs))
+        return await self._intercept_call(
+            "initialize", None, lambda ctx: self._client_session.initialize(*args, **kwargs)
+        )
 
     # List requests usually don't have parameters
     async def list_tools(self, *args, **kwargs) -> ListToolsResult:
-        return await self._intercept_call("tools/list", None, lambda: self._client_session.list_tools(*args, **kwargs))
+        return await self._intercept_call(
+            "tools/list", None, lambda ctx: self._client_session.list_tools(*args, **kwargs)
+        )
 
     async def call_tool(self, name: str, arguments: dict[str, Any], *args, **kwargs) -> CallToolResult:
         params = CallToolRequestParams(name=name, arguments=arguments)
         return await self._intercept_call(
-            "tools/call", params, lambda: self._client_session.call_tool(name, arguments, *args, **kwargs)
+            "tools/call",
+            params,
+            lambda ctx: self._client_session.call_tool(ctx.params.name, ctx.params.arguments, *args, **kwargs),
         )
 
     async def list_resources(self, *args, **kwargs) -> ListResourcesResult:
         return await self._intercept_call(
-            "resources/list", None, lambda: self._client_session.list_resources(*args, **kwargs)
+            "resources/list", None, lambda ctx: self._client_session.list_resources(*args, **kwargs)
         )
 
-    async def read_resource(self, uri: str, *args, **kwargs) -> ReadResourceResult:
+    async def read_resource(self, uri: AnyUrl, *args, **kwargs) -> ReadResourceResult:
         params = ReadResourceRequestParams(uri=uri)
         return await self._intercept_call(
-            "resources/read", params, lambda: self._client_session.read_resource(uri, *args, **kwargs)
+            "resources/read", params, lambda ctx: self._client_session.read_resource(ctx.params.uri, *args, **kwargs)
         )
 
     async def list_prompts(self, *args, **kwargs) -> ListPromptsResult:
         return await self._intercept_call(
-            "prompts/list", None, lambda: self._client_session.list_prompts(*args, **kwargs)
+            "prompts/list", None, lambda ctx: self._client_session.list_prompts(*args, **kwargs)
         )
 
     async def get_prompt(self, name: str, *args, **kwargs) -> GetPromptResult:
         params = GetPromptRequestParams(name=name, **kwargs)
         return await self._intercept_call(
-            "prompts/get", params, lambda: self._client_session.get_prompt(name, *args, **kwargs)
+            "prompts/get", params, lambda ctx: self._client_session.get_prompt(ctx.params.name, *args, **kwargs)
         )
 
     def __getattr__(self, name: str) -> Any:

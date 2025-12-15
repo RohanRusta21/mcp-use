@@ -8,7 +8,7 @@ const server = createMCPServer("uiresource-mcp-server", {
   baseUrl: process.env.MCP_URL, // Full base URL (e.g., https://myserver.com)
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 /**
  * ════════════════════════════════════════════════════════════════════
@@ -256,10 +256,12 @@ root.appendChild(container);
  * You can mix UIResources with traditional MCP tools and resources
  */
 
-server.tool({
-  name: "get-widget-info",
-  description: "Get information about available UI widgets",
-  cb: async () => {
+server.tool(
+  {
+    name: "get-widget-info",
+    description: "Get information about available UI widgets",
+  },
+  async () => {
     const widgets = [
       {
         name: "kanban-board",
@@ -303,8 +305,8 @@ server.tool({
         },
       ],
     };
-  },
-});
+  }
+);
 
 server.resource({
   name: "server-config",

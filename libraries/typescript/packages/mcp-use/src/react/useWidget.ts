@@ -15,13 +15,13 @@ import type {
   DisplayMode,
   OpenAiGlobals,
   SafeArea,
+  SetGlobalsEvent,
   Theme,
   UnknownObject,
   UserAgent,
   UseWidgetResult,
 } from "./widget-types.js";
 import { SET_GLOBALS_EVENT_TYPE } from "./widget-types.js";
-import type { SetGlobalsEvent } from "./widget-types.js";
 
 /**
  * Hook to subscribe to a single value from window.openai globals
@@ -86,20 +86,67 @@ export function useWidget<
   TMetadata extends UnknownObject = UnknownObject,
   TState extends UnknownObject = UnknownObject,
 >(defaultProps?: TProps): UseWidgetResult<TProps, TOutput, TMetadata, TState> {
-  console.log(window?.location?.search, window.openai);
-  // Check if window.openai is available
-  const isOpenAiAvailable = useMemo(
-    () => typeof window !== "undefined" && !!window.openai,
-    []
+  // Check if window.openai is available - use state to allow re-checking after async injection
+  const [isOpenAiAvailable, setIsOpenAiAvailable] = useState(
+    () => typeof window !== "undefined" && !!window.openai
   );
+
+  // Re-check for window.openai availability after mount (in case it's injected asynchronously)
+  useEffect(() => {
+    // Initial check
+    if (typeof window !== "undefined" && window.openai) {
+      setIsOpenAiAvailable(true);
+      return;
+    }
+
+    // Poll for window.openai if not immediately available (for async script injection)
+    const checkInterval = setInterval(() => {
+      if (typeof window !== "undefined" && window.openai) {
+        setIsOpenAiAvailable(true);
+        clearInterval(checkInterval);
+      }
+    }, 100);
+
+    // Also listen for the openai:set_globals event which fires when the API is ready
+    const handleSetGlobals = () => {
+      if (typeof window !== "undefined" && window.openai) {
+        setIsOpenAiAvailable(true);
+        clearInterval(checkInterval);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener(SET_GLOBALS_EVENT_TYPE, handleSetGlobals);
+    }
+
+    // Cleanup after 5 seconds max (should be injected by then)
+    const timeout = setTimeout(() => {
+      clearInterval(checkInterval);
+      if (typeof window !== "undefined") {
+        window.removeEventListener(SET_GLOBALS_EVENT_TYPE, handleSetGlobals);
+      }
+    }, 5000);
+
+    return () => {
+      clearInterval(checkInterval);
+      clearTimeout(timeout);
+      if (typeof window !== "undefined") {
+        window.removeEventListener(SET_GLOBALS_EVENT_TYPE, handleSetGlobals);
+      }
+    };
+  }, []);
 
   const provider = useMemo(() => {
     return isOpenAiAvailable ? "openai" : "mcp-ui";
   }, [isOpenAiAvailable]);
 
+  // Extract search string to avoid dependency issues
+  const searchString =
+    typeof window !== "undefined" ? window.location.search : "";
+
   const urlParams = useMemo(() => {
     // check if it has mcpUseParams
-    const urlParams = new URLSearchParams(window?.location?.search);
+    const urlParams = new URLSearchParams(searchString);
     if (urlParams.has("mcpUseParams")) {
       return JSON.parse(urlParams.get("mcpUseParams") as string) as {
         toolInput: TProps;
@@ -112,9 +159,7 @@ export function useWidget<
       toolOutput: {} as TOutput,
       toolId: "",
     };
-  }, [window?.location?.search]);
-
-  console.log(urlParams);
+  }, [searchString]);
 
   // Subscribe to globals
   const toolInput =
@@ -139,6 +184,15 @@ export function useWidget<
   const maxHeight = useOpenAiGlobal("maxHeight") as number | undefined;
   const userAgent = useOpenAiGlobal("userAgent") as UserAgent | undefined;
   const locale = useOpenAiGlobal("locale") as string | undefined;
+
+  // Compute MCP server base URL from window.__mcpPublicUrl
+  const mcp_url = useMemo(() => {
+    if (typeof window !== "undefined" && window.__mcpPublicUrl) {
+      // Remove the /mcp-use/public suffix to get the base server URL
+      return window.__mcpPublicUrl.replace(/\/mcp-use\/public$/, "");
+    }
+    return "";
+  }, []);
 
   // Use local state for widget state with sync to window.openai
   const [localWidgetState, setLocalWidgetState] = useState<TState | null>(null);
@@ -195,17 +249,21 @@ export function useWidget<
     async (
       state: TState | ((prevState: TState | null) => TState)
     ): Promise<void> => {
-      const newState =
-        typeof state === "function" ? state(localWidgetState) : state;
-
       if (!window.openai?.setWidgetState) {
         throw new Error("window.openai.setWidgetState is not available");
       }
 
+      // Use functional update to always get latest state
+      // Prefer widgetState (from window.openai) over localWidgetState for most up-to-date value
+      const currentState =
+        widgetState !== undefined ? widgetState : localWidgetState;
+      const newState =
+        typeof state === "function" ? state(currentState) : state;
+
       setLocalWidgetState(newState);
       return window.openai.setWidgetState(newState);
     },
-    [localWidgetState]
+    [widgetState, localWidgetState]
   );
 
   return {
@@ -226,6 +284,7 @@ export function useWidget<
       capabilities: { hover: true, touch: false },
     },
     locale: locale || "en",
+    mcp_url,
 
     // Actions
     callTool,

@@ -1,7 +1,3 @@
-import type { CustomHeader } from "./CustomHeadersEditor";
-import { Cog, Copy, FileText, Shield } from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
 import { Button } from "@/client/components/ui/button";
 import {
   Dialog,
@@ -21,6 +17,10 @@ import {
 } from "@/client/components/ui/select";
 import { Switch } from "@/client/components/ui/switch";
 import { cn } from "@/client/lib/utils";
+import { Cog, Copy, FileText, Shield } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import type { CustomHeader } from "./CustomHeadersEditor";
 import { CustomHeadersEditor } from "./CustomHeadersEditor";
 
 interface ConnectionSettingsFormProps {
@@ -258,7 +258,7 @@ export function ConnectionSettingsForm({
   };
 
   return (
-    <div className="space-y-4 relative" onKeyDown={handleKeyDown}>
+    <div className="space-y-4 relative @container" onKeyDown={handleKeyDown}>
       <h3 className="text-xl font-semibold text-white mb-4">Connect</h3>
       {/* Copy Config Button - positioned absolutely on styled variant */}
       {showExportButton && (
@@ -295,7 +295,7 @@ export function ConnectionSettingsForm({
       <div className="space-y-2">
         <Label className={labelClassName}>URL</Label>
         <Input
-          placeholder="http://localhost:3001/sse"
+          placeholder="http://localhost:3000/sse"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onPaste={handlePaste}
@@ -354,11 +354,11 @@ export function ConnectionSettingsForm({
       </div>
 
       {/* Configuration Buttons Row */}
-      <div className="flex gap-3">
+      <div className="flex flex-row gap-3 @lg:flex-col">
         {/* Authentication Button */}
         <Dialog open={authDialogOpen} onOpenChange={setAuthDialogOpen}>
           <DialogTrigger asChild>
-            <div className="relative flex-1">
+            <div className="relative flex-1 ">
               <Button
                 variant="outline"
                 className={cn(
@@ -372,7 +372,7 @@ export function ConnectionSettingsForm({
               </Button>
             </div>
           </DialogTrigger>
-          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogContent className="w-[calc(100vw-2rem)] sm:w-full max-w-2xl max-h-[80vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Authentication</DialogTitle>
             </DialogHeader>
@@ -418,7 +418,7 @@ export function ConnectionSettingsForm({
         {/* Custom Headers Button */}
         <Dialog open={headersDialogOpen} onOpenChange={setHeadersDialogOpen}>
           <DialogTrigger asChild>
-            <div className="relative flex-1">
+            <div className="relative flex-1 ">
               <Button
                 variant="outline"
                 className={cn(
@@ -449,7 +449,7 @@ export function ConnectionSettingsForm({
             <Button
               variant="outline"
               className={cn(
-                "flex-1 justify-center hover:text-white cursor-pointer",
+                "flex-1  justify-center hover:text-white cursor-pointer",
                 buttonClassName
               )}
             >
